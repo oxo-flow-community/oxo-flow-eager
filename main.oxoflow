@@ -1,0 +1,721 @@
+# ================================================================
+# oxo-flow-eager — ancient DNA (aDNA) analysis
+#
+# oxo-flow port of nf-core/eager 2.5.3
+#   upstream: https://github.com/nf-core/eager (tag 2.5.3,
+#   sha 3f9d64ced5e287391bcd5517a0c40153a01268e5, MIT license)
+#
+# Ported default-parameters main path (directory input, paired-end):
+#   makeFastaIndex -> makeSeqDict -> makeBWAIndex -> FASTQC ->
+#   [fastp poly-G filter, off by default] -> AdapterRemoval ->
+#   FASTQC_AFTER_CLIPPING -> BWA aln -> SAMTOOLS_FLAGSTAT ->
+#   MarkDuplicates (default dedupper) / [DeDup] -> PRESEQ ->
+#   DamageProfiler -> Qualimap -> [pileupCaller genotyping +
+#   eigenstrat_snp_coverage, off by default] -> MultiQC
+#
+# Upstream is DSL1 with one container for all processes
+# (process.container = 'nfcore/eager:2.5.3'); the port mirrors this
+# with one [defaults] docker environment. All file paths are
+# explicit; files upstream publishes under results/ are declared
+# outputs at the same relative paths.
+# ================================================================
+
+[workflow]
+name = "oxo-flow-eager"
+version = "0.1.0"
+description = "Ancient DNA (aDNA) analysis: FastQC -> fastp (optional) -> AdapterRemoval -> BWA aln -> MarkDuplicates/DeDup -> DamageProfiler -> pileupCaller genotyping (optional) -> MultiQC — oxo-flow port of nf-core/eager 2.5.3"
+author = "oxo-flow-community"
+sample_groups_file = "test/fixtures/groups.tsv"
+
+[config]
+# --- input / library metadata (directory-input mode defaults) ---
+fasta = "test/fixtures/reference/genome.fa"
+single_end = false
+seqtype = "PE"
+lane = 0
+udg_type = "none"
+colour_chemistry = 4
+out_dir = "results"
+# --- skipping (upstream defaults: run everything except optional branches) ---
+skip_fastqc = false
+skip_adapterremoval = false
+skip_preseq = false
+skip_deduplication = false
+skip_damage_calculation = false
+skip_qualimap = false
+# --- complexity (poly-G) filter ---
+complexity_filter_poly_g = false
+complexity_filter_poly_g_min = 10
+# --- read clipping / merging ---
+clip_forward_adaptor = "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
+clip_reverse_adaptor = "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTA"
+clip_readlength = 30
+clip_min_read_quality = 20
+min_adap_overlap = 1
+skip_collapse = false
+skip_trim = false
+preserve5p = false
+mergedonly = false
+qualitymax = 41
+# --- mapping ---
+mapper = "bwaaln"
+bwaalnn = 0.01
+bwaalnk = 2
+bwaalnl = 1024
+bwaalno = 2
+large_ref = false
+save_reference = false
+# --- deduplication ---
+dedupper = "markduplicates"
+dedup_all_merged = false
+# --- preseq ---
+preseq_step_size = 1000
+preseq_mode = "c_curve"
+preseq_bootstrap = 100
+preseq_maxextrap = 10000000000
+preseq_cval = 0.95
+preseq_terms = 100
+# --- damage estimation ---
+damage_calculation_tool = "damageprofiler"
+damageprofiler_length = 100
+damageprofiler_threshold = 15
+damageprofiler_yaxis = "0.30"
+# --- genotyping (pileupCaller branch) ---
+run_genotyping = false
+genotyping_tool = ""
+genotyping_source = "raw"
+pileupcaller_method = "randomHaploid"
+pileupcaller_transitions_mode = "AllSites"
+pileupcaller_min_map_quality = 30
+pileupcaller_min_base_quality = 30
+pileupcaller_snpfile = ""
+pileupcaller_bedfile = ""
+
+[defaults]
+threads = 1
+memory = "7G"
+time_limit = "24h"
+environment = { docker = "nfcore/eager:2.5.3" }
+
+# ------------------------------------------------------------------
+# R1  MAKE_FASTA_INDEX  (sc_small: 1 cpu / 4G / 4h)
+#     Upstream: samtools faidx on the reference; the port copies the
+#     input to results/reference_genome/fasta_index/reference.fa so
+#     downstream rules share one canonical reference (see README
+#     fidelity table for the naming note).
+# ------------------------------------------------------------------
+[[rules]]
+name = "make_fasta_index"
+description = "Index the reference FASTA with samtools faidx"
+input = ["{config.fasta}"]
+output = [
+    "results/reference_genome/fasta_index/reference.fa",
+    "results/reference_genome/fasta_index/reference.fa.fai",
+]
+shell = '''
+set -euo pipefail
+mkdir -p results/reference_genome/fasta_index
+cp "{input[0]}" results/reference_genome/fasta_index/reference.fa
+samtools faidx results/reference_genome/fasta_index/reference.fa
+'''
+tags = ["reference"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R2  MAKE_SEQ_DICT  (sc_medium: 1 cpu / 8G / 4h)
+#     picard CreateSequenceDictionary, verbatim (including -Xmx).
+# ------------------------------------------------------------------
+[[rules]]
+name = "make_seq_dict"
+description = "Create the reference sequence dictionary with picard CreateSequenceDictionary"
+input = ["{config.fasta}"]
+output = ["results/reference_genome/seq_dict/reference.dict"]
+shell = '''
+set -euo pipefail
+picard -Xmx{memory} CreateSequenceDictionary R="{input[0]}" O=results/reference_genome/seq_dict/reference.dict
+'''
+tags = ["reference"]
+
+[rules.resources]
+threads = 1
+memory = "8192M"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R3  MAKE_BWA_INDEX  (sc_medium: 1 cpu / 8G / 4h)
+#     cp reference into BWAIndex/ + bwa index, verbatim command
+#     logic (canonical file name reference.fa, see fidelity table).
+# ------------------------------------------------------------------
+[[rules]]
+name = "make_bwa_index"
+description = "Build the BWA index with bwa index"
+input = ["{config.fasta}"]
+output = [
+    "results/reference_genome/bwa_index/BWAIndex/reference.fa",
+    "results/reference_genome/bwa_index/BWAIndex/reference.fa.amb",
+    "results/reference_genome/bwa_index/BWAIndex/reference.fa.ann",
+    "results/reference_genome/bwa_index/BWAIndex/reference.fa.bwt",
+    "results/reference_genome/bwa_index/BWAIndex/reference.fa.pac",
+    "results/reference_genome/bwa_index/BWAIndex/reference.fa.sa",
+]
+shell = '''
+set -euo pipefail
+mkdir -p results/reference_genome/bwa_index/BWAIndex
+cp "{input[0]}" results/reference_genome/bwa_index/BWAIndex/reference.fa
+cd results/reference_genome/bwa_index/BWAIndex
+bwa index reference.fa
+'''
+tags = ["reference"]
+
+[rules.resources]
+threads = 1
+memory = "8192M"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R4  FASTQC  (mc_small: 2 cpu / 4G / 4h)
+#     Verbatim: fastqc -t cpus -q r1 r2, then rename
+#     *_fastqc.zip -> *_raw_fastqc.zip (per-instance scoped, as the
+#     shared results dir means each instance only renames its own
+#     sample's files). Zips are moved to zips/ like the upstream
+#     publishDir saveAs.
+# ------------------------------------------------------------------
+[[rules]]
+name = "fastqc"
+description = "Raw sequencing QC with FastQC on the input FASTQs"
+when = "!config.skip_fastqc"
+input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
+output = [
+    "results/fastqc/input_fastq/zips/{sample}_R1_raw_fastqc.zip",
+    "results/fastqc/input_fastq/zips/{sample}_R2_raw_fastqc.zip",
+    "results/fastqc/input_fastq/{sample}_R1_raw_fastqc.html",
+    "results/fastqc/input_fastq/{sample}_R2_raw_fastqc.html",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/fastqc/input_fastq
+cd results/fastqc/input_fastq
+fastqc -t {threads} -q "$ROOT/{input[0]}" "$ROOT/{input[1]}"
+rename 's/^{sample}_R1_fastqc\.zip$/{sample}_R1_raw_fastqc.zip/' {sample}_R1_fastqc.zip
+rename 's/^{sample}_R1_fastqc\.html$/{sample}_R1_raw_fastqc.html/' {sample}_R1_fastqc.html
+rename 's/^{sample}_R2_fastqc\.zip$/{sample}_R2_raw_fastqc.zip/' {sample}_R2_fastqc.zip
+rename 's/^{sample}_R2_fastqc\.html$/{sample}_R2_raw_fastqc.html/' {sample}_R2_fastqc.html
+mkdir -p zips
+mv {sample}_R1_raw_fastqc.zip {sample}_R2_raw_fastqc.zip zips/
+'''
+tags = ["qc", "fastq"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R5  FASTP  (mc_small: 2 cpu / 4G / 4h)
+#     Poly-G complexity filter; off by default, same as upstream
+#     (params.complexity_filter_poly_g). Verbatim flags. Upstream feeds
+#     fastp ONLY the 2-colour-chemistry (NextSeq/NovaSeq) branch of the
+#     channel (`ch_input_for_fastp.twocol`, main.nf lines 723-746); the
+#     port mirrors this with the `colour_chemistry == 2` gate — with the
+#     default 4 no sample is filtered, exactly as upstream.
+# ------------------------------------------------------------------
+[[rules]]
+name = "fastp"
+description = "Poly-G complexity filtering with fastp (off by default, same as upstream)"
+when = "config.complexity_filter_poly_g && config.colour_chemistry == 2"
+input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
+output = [
+    "results/FastP/{sample}_R1.pG.fq.gz",
+    "results/FastP/{sample}_R2.pG.fq.gz",
+    "results/FastP/{sample}_L{config.lane}_polyg_fastp.json",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/FastP
+cd results/FastP
+fastp --in1 "$ROOT/{input[0]}" --in2 "$ROOT/{input[1]}" --out1 "{sample}_R1.pG.fq.gz" --out2 "{sample}_R2.pG.fq.gz" -A -g --poly_g_min_len "{config.complexity_filter_poly_g_min}" -Q -L -w {threads} --json "{sample}_L{config.lane}_polyg_fastp.json"
+'''
+tags = ["fastq", "preprocessing"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R6  ADAPTER_REMOVAL  (mc_small: 2 cpu / 4G / 4h)
+#     Default PE branch (collapse + trim, all reads output):
+#     AdapterRemoval ... --collapse --trimns --trimqualities
+#     --adapter1/--adapter2, then cat the 5 `.pe`-prefixed gz parts
+#     (files are written as <base>.pe.collapsed.gz etc. because AR is
+#     invoked with --basename <base>.pe, as upstream), mv settings,
+#     AdapterRemovalFixPrefix | pigz. The fastp gate above switches
+#     the input files when complexity_filter_poly_g is enabled
+#     (upstream channel mix ch_fastp_for_adapterremoval).
+# ------------------------------------------------------------------
+[[rules]]
+name = "adapter_removal"
+description = "Adapter clipping and paired-end read merging with AdapterRemoval + AdapterRemovalFixPrefix (PE collapse branch)"
+when = "!config.skip_adapterremoval"
+depends_on = ["fastp"]
+input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
+output = [
+    "results/adapterremoval/output/{sample}_R1_L{config.lane}.pe.combined.fq.gz",
+    "results/adapterremoval/output/{sample}_R1_L{config.lane}.pe.settings",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+if [ -s "$ROOT/results/FastP/{sample}_R1.pG.fq.gz" ]; then
+  R1="$ROOT/results/FastP/{sample}_R1.pG.fq.gz"
+  R2="$ROOT/results/FastP/{sample}_R2.pG.fq.gz"
+else
+  R1="$ROOT/{input[0]}"
+  R2="$ROOT/{input[1]}"
+fi
+mkdir -p results/adapterremoval/output
+cd results/adapterremoval
+AdapterRemoval --file1 "$R1" --file2 "$R2" --basename {sample}_R1_L{config.lane}.pe --gzip --threads {threads} --qualitymax {config.qualitymax} --collapse --trimns --trimqualities --adapter1 {config.clip_forward_adaptor} --adapter2 {config.clip_reverse_adaptor} --minlength {config.clip_readlength} --minquality {config.clip_min_read_quality} --minadapteroverlap {config.min_adap_overlap}
+cat {sample}_R1_L{config.lane}.pe.collapsed.gz {sample}_R1_L{config.lane}.pe.collapsed.truncated.gz {sample}_R1_L{config.lane}.pe.singleton.truncated.gz {sample}_R1_L{config.lane}.pe.pair1.truncated.gz {sample}_R1_L{config.lane}.pe.pair2.truncated.gz > output/{sample}_R1_L{config.lane}.pe.combined.tmp.fq.gz
+mv {sample}_R1_L{config.lane}.pe.settings output/{sample}_R1_L{config.lane}.pe.settings
+AdapterRemovalFixPrefix -Xmx{memory} output/{sample}_R1_L{config.lane}.pe.combined.tmp.fq.gz | pigz -p $(( {threads} - 1 )) > output/{sample}_R1_L{config.lane}.pe.combined.fq.gz
+'''
+tags = ["preprocessing", "adapter-trimming"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R7  FASTQC_AFTER_CLIPPING  (mc_small: 2 cpu / 4G / 4h)
+#     fastqc on the merged reads, zips to zips/ (saveAs logic).
+# ------------------------------------------------------------------
+[[rules]]
+name = "fastqc_after_clipping"
+description = "FastQC on the adapter-clipped/merged reads"
+when = "!config.skip_adapterremoval && !config.skip_fastqc"
+input = ["results/adapterremoval/output/{sample}_R1_L{config.lane}.pe.combined.fq.gz"]
+output = [
+    "results/fastqc/after_clipping/zips/{sample}_R1_L{config.lane}.pe.combined_fastqc.zip",
+    "results/fastqc/after_clipping/{sample}_R1_L{config.lane}.pe.combined_fastqc.html",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/fastqc/after_clipping
+cd results/fastqc/after_clipping
+fastqc -t {threads} -q "$ROOT/{input[0]}"
+mkdir -p zips
+mv {sample}_R1_L{config.lane}.pe.combined_fastqc.zip zips/
+'''
+tags = ["qc", "fastq"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R8  BWA  (mc_medium: 4 cpu / 8G / 4h)
+#     Verbatim PE branch: bwa aln (params -n/-l/-k/-o) -> bwa samse
+#     with the eager @RG string -> samtools sort -> samtools index.
+#     Writes the .sai into the mapping dir (cwd) to keep the
+#     workflow root clean; runs on the merged reads.
+# ------------------------------------------------------------------
+[[rules]]
+name = "bwa_aln"
+description = "Map reads with bwa aln + bwa samse, sort with samtools (PE branch)"
+when = "config.mapper == 'bwaaln'"
+input = [
+    "results/adapterremoval/output/{sample}_R1_L{config.lane}.pe.combined.fq.gz",
+    "results/reference_genome/bwa_index/BWAIndex/reference.fa",
+]
+output = [
+    "results/mapping/bwa/{sample}_PE.mapped.bam",
+    "results/mapping/bwa/{sample}_PE.mapped.bam.bai",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/mapping/bwa
+cd results/mapping/bwa
+bwa aln -t {threads} "$ROOT/{input[1]}" "$ROOT/{input[0]}" -n {config.bwaalnn} -l {config.bwaalnl} -k {config.bwaalnk} -o {config.bwaalno} -f {sample}.sai
+bwa samse -r "@RG\\tID:ILLUMINA-{sample}_{sample}\\tSM:{sample}\\tLB:{sample}\\tPL:illumina\\tPU:ILLUMINA-{sample}-{config.seqtype}" "$ROOT/{input[1]}" {sample}.sai "$ROOT/{input[0]}" | samtools sort -@ $(( {threads} - 1 )) -O bam - > {sample}_PE.mapped.bam
+samtools index {sample}_PE.mapped.bam
+'''
+tags = ["alignment"]
+
+[rules.resources]
+threads = 4
+memory = "8G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R9  SAMTOOLS_FLAGSTAT  (sc_tiny: 1 cpu / 1G / 4h)
+#     Verbatim: samtools flagstat $bam > {libraryid}_flagstat.stats
+# ------------------------------------------------------------------
+[[rules]]
+name = "samtools_flagstat"
+description = "Per-sample flagstat QC on the mapped BAM"
+input = ["results/mapping/bwa/{sample}_PE.mapped.bam"]
+output = ["results/samtools/stats/{sample}_flagstat.stats"]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/samtools/stats
+cd results/samtools/stats
+samtools flagstat "$ROOT/{input[0]}" > {sample}_flagstat.stats
+'''
+tags = ["qc", "bam"]
+
+[rules.resources]
+threads = 1
+memory = "1G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R10  MARKDUPLICATES  (mc_small: 2 cpu / 4G / 4h)
+#      Default dedupper. Verbatim picard MarkDuplicates command
+#      (INPUT points at the mapped BAM instead of the workdir-local
+#      rename — see fidelity table), then samtools index.
+# ------------------------------------------------------------------
+[[rules]]
+name = "markduplicates"
+description = "Remove duplicates with picard MarkDuplicates (default dedupper)"
+when = "!config.skip_deduplication && config.dedupper == 'markduplicates'"
+input = ["results/mapping/bwa/{sample}_PE.mapped.bam"]
+output = [
+    "results/deduplication/{sample}/{sample}_rmdup.bam",
+    "results/deduplication/{sample}/{sample}_rmdup.bam.bai",
+    "results/deduplication/{sample}/{sample}_rmdup.metrics",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/deduplication/{sample}
+cd results/deduplication/{sample}
+picard -Xmx{memory} MarkDuplicates INPUT="$ROOT/{input[0]}" OUTPUT={sample}_rmdup.bam REMOVE_DUPLICATES=TRUE AS=TRUE METRICS_FILE="{sample}_rmdup.metrics" VALIDATION_STRINGENCY=SILENT
+samtools index {sample}_rmdup.bam
+'''
+tags = ["deduplication"]
+
+[rules.resources]
+threads = 2
+memory = "4096M"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R11  DEDUP  (mc_small: 2 cpu / 4G / 4h)
+#      Alternative dedupper (params.dedupper == 'dedup'), off by
+#      default. The upstream workdir-local rename (mv bam
+#      {libraryid}.bam) becomes a copy so the shared mapped BAM is
+#      preserved; rest verbatim: dedup -o . -u, mv *.log dedup.log,
+#      in-place samtools sort, index.
+# ------------------------------------------------------------------
+[[rules]]
+name = "dedup"
+description = "Remove duplicates with DeDup (alternative dedupper, off by default)"
+when = "!config.skip_deduplication && config.dedupper == 'dedup'"
+input = ["results/mapping/bwa/{sample}_PE.mapped.bam"]
+output = [
+    "results/deduplication/{sample}/{sample}_rmdup.bam",
+    "results/deduplication/{sample}/{sample}_rmdup.bam.bai",
+    "results/deduplication/{sample}/{sample}.hist",
+    "results/deduplication/{sample}/{sample}.dedup.json",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/deduplication/{sample}
+cd results/deduplication/{sample}
+cp "$ROOT/{input[0]}" {sample}.bam
+dedup -Xmx{memory} -i {sample}.bam -o . -u
+mv *.log dedup.log
+samtools sort -@ {threads} "{sample}"_rmdup.bam -o "{sample}"_rmdup.bam
+samtools index "{sample}"_rmdup.bam
+'''
+tags = ["deduplication"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R12  PRESEQ  (sc_tiny: 1 cpu / 1G / 4h)
+#      Verbatim default branch: preseq c_curve -s <step> -o
+#      <input.baseName>.preseq -B <mapped bam> (markduplicates
+#      mode; the -H variant is the dedup-mode branch, see fidelity
+#      table).
+# ------------------------------------------------------------------
+[[rules]]
+name = "preseq"
+description = "Library complexity estimation with preseq c_curve on the mapped BAM"
+when = "!config.skip_preseq"
+input = ["results/mapping/bwa/{sample}_PE.mapped.bam"]
+output = ["results/preseq/{sample}_PE.mapped.preseq"]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/preseq
+cd results/preseq
+preseq c_curve -s {config.preseq_step_size} -o {sample}_PE.mapped.preseq -B "$ROOT/{input[0]}"
+'''
+tags = ["qc", "complexity"]
+
+[rules.resources]
+threads = 1
+memory = "1G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R13  DAMAGEPROFILER  (sc_small: 1 cpu / 4G / 4h)
+#      Verbatim: damageprofiler -Xmx4g -i <rmdup bam> -r <fasta>
+#      -l 100 -t 15 -o . -yaxis_damageplot 0.30; output lands in
+#      results/damageprofiler/<bam-basename>/ as upstream.
+# ------------------------------------------------------------------
+[[rules]]
+name = "damageprofiler"
+description = "DNA damage pattern estimation with DamageProfiler on the deduplicated BAM"
+when = "!config.skip_damage_calculation && config.damage_calculation_tool == 'damageprofiler'"
+depends_on = ["markduplicates", "dedup"]
+input = [
+    "results/deduplication/{sample}/{sample}_rmdup.bam",
+    "results/reference_genome/fasta_index/reference.fa",
+    "results/reference_genome/fasta_index/reference.fa.fai",
+]
+output = [
+    "results/damageprofiler/{sample}_rmdup/dmgprof.json",
+    "results/damageprofiler/{sample}_rmdup/lgdistribution.txt",
+    "results/damageprofiler/{sample}_rmdup/misincorporation.txt",
+    "results/damageprofiler/{sample}_rmdup/5pCtoT_freq.txt",
+    "results/damageprofiler/{sample}_rmdup/3pGtoA_freq.txt",
+    "results/damageprofiler/{sample}_rmdup/5p_freq_misincorporations.txt",
+    "results/damageprofiler/{sample}_rmdup/3p_freq_misincorporations.txt",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/damageprofiler
+cd results/damageprofiler
+damageprofiler -Xmx{memory} -i "$ROOT/{input[0]}" -r "$ROOT/{input[1]}" -l {config.damageprofiler_length} -t {config.damageprofiler_threshold} -o . -yaxis_damageplot {config.damageprofiler_yaxis}
+'''
+tags = ["qc", "ancient-dna"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R14  QUALIMAP  (mc_small: 2 cpu / 4G / 4h)
+#      Verbatim: qualimap bamqc -bam <rmdup bam> -nt 2 -outdir .
+#      -outformat "HTML" --java-mem-size=4G (no snpcapture bed by
+#      default). qualimap writes <bam-base>_bamqc/qualimapReport.html.
+# ------------------------------------------------------------------
+[[rules]]
+name = "qualimap"
+description = "BAM QC with Qualimap bamqc on the deduplicated BAM"
+when = "!config.skip_qualimap"
+depends_on = ["markduplicates", "dedup"]
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/qualimap/{sample}_rmdup_bamqc/qualimapReport.html"]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/qualimap
+cd results/qualimap
+qualimap bamqc -bam "$ROOT/{input[0]}" -nt {threads} -outdir . -outformat "HTML" --java-mem-size={memory}
+'''
+tags = ["qc", "bam"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R15  GENOTYPING_PILEUPCALLER  (mc_small: 2 cpu / 4G / 4h)
+#      Off by default (run_genotyping=false), same as upstream.
+#      Single-instance fan-in over all samples' deduplicated BAMs:
+#      samtools mpileup -B --ignore-RG -q 30 -Q 30 [-l <bed>] -f
+#      <fasta> <bams> | pileupCaller --randomHaploid --sampleNames
+#      <comma list> [-f <snp>] -e pileupcaller.double. -l/-f render
+#      only when pileupcaller_bedfile/pileupcaller_snpfile are set,
+#      exactly like upstream's dummy-file check (main.nf 2608-2609);
+#      when they are unset the rule fails fast with upstream's
+#      error message — upstream exits 1 at workflow start (main.nf
+#      74-78), oxo-flow has no params-validation stage, so the guard
+#      lives in the rule shell.
+# ------------------------------------------------------------------
+[[rules]]
+name = "genotyping_pileupcaller"
+description = "Pileup genotyping with samtools mpileup + pileupCaller (off by default, same as upstream)"
+when = "config.run_genotyping && config.genotyping_tool == 'pileupcaller'"
+depends_on = ["markduplicates", "dedup"]
+input = []
+expand_inputs = [
+    { pattern = "results/deduplication/{sample}/{sample}_rmdup.bam", variables = { sample = "config.samples_list" } }
+]
+output = [
+    "results/genotyping/pileupcaller.double.snp",
+    "results/genotyping/pileupcaller.double.eigenstratgeno",
+    "results/genotyping/pileupcaller.double.geno",
+    "results/genotyping/pileupcaller.double.sites",
+    "results/genotyping/pileupcaller.double.ind",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+if [ -z "{config.pileupcaller_snpfile}" ] || [ -z "{config.pileupcaller_bedfile}" ]; then
+  echo "[oxo-flow-eager] error: please check your pileupCaller bed file and snp file parameters. You must supply a bed file and a snp file (run_genotyping with genotyping_tool=pileupcaller requires pileupcaller_bedfile=... and pileupcaller_snpfile=...)." >&2
+  exit 1
+fi
+BED_ARGS=""
+SNP_ARGS=""
+if [ -n "{config.pileupcaller_bedfile}" ]; then BED_ARGS="-l $ROOT/{config.pileupcaller_bedfile}"; fi
+if [ -n "{config.pileupcaller_snpfile}" ]; then SNP_ARGS="-f $ROOT/{config.pileupcaller_snpfile}"; fi
+mkdir -p results/genotyping
+cd results/genotyping
+samtools mpileup -B --ignore-RG -q {config.pileupcaller_min_map_quality} -Q {config.pileupcaller_min_base_quality} $BED_ARGS -f "$ROOT/results/reference_genome/fasta_index/reference.fa" $(for f in {input}; do echo "$ROOT/$f "; done) | pileupCaller --randomHaploid --sampleNames {config.samples_list} $SNP_ARGS -e pileupcaller.double
+'''
+tags = ["genotyping"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R16  EIGENSTRAT_SNP_COVERAGE  (mc_tiny label undefined upstream,
+#      falls back to the base process default 1 cpu / 7G / 24h)
+#      Verbatim: eigenstrat_snp_coverage -i pileupcaller.double >
+#      double_eigenstrat_coverage.txt; parse_snp_cov.py (bundled
+#      upstream script) writes double_eigenstrat_coverage_mqc.json.
+# ------------------------------------------------------------------
+[[rules]]
+name = "eigenstrat_snp_coverage"
+description = "SNP coverage summary with eigenstrat_snp_coverage + parse_snp_cov.py (off by default, same as upstream)"
+when = "config.run_genotyping && config.genotyping_tool == 'pileupcaller'"
+input = [
+    "results/genotyping/pileupcaller.double.snp",
+    "results/genotyping/pileupcaller.double.eigenstratgeno",
+    "results/genotyping/pileupcaller.double.geno",
+    "results/genotyping/pileupcaller.double.sites",
+    "results/genotyping/pileupcaller.double.ind",
+]
+output = [
+    "results/genotyping/double_eigenstrat_coverage.txt",
+    "results/genotyping/double_eigenstrat_coverage_mqc.json",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+cd results/genotyping
+eigenstrat_snp_coverage -i pileupcaller.double >double_eigenstrat_coverage.txt
+python3 "$ROOT/scripts/parse_snp_cov.py" double_eigenstrat_coverage.txt
+'''
+tags = ["genotyping"]
+
+[rules.resources]
+threads = 1
+memory = "7G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# R17  MULTIQC  (sc_medium: 1 cpu / 8G / 4h)
+#      Staging mirrors the upstream multiqc process inputs: each
+#      module's files are copied into results/multiqc/<module>/
+#      subdirs (guarded — a skipped module is simply absent), the
+#      eager logo is staged, then:
+#        multiqc -f --config assets/multiqc_config.yaml .
+#      The upstream --title/--filename run-name flags are nf-core
+#      boilerplate and are dropped (see fidelity table).
+# ------------------------------------------------------------------
+[[rules]]
+name = "multiqc"
+description = "Aggregate all QC reports with MultiQC"
+depends_on = [
+    "make_fasta_index",
+    "make_seq_dict",
+    "make_bwa_index",
+    "fastqc",
+    "fastp",
+    "adapter_removal",
+    "fastqc_after_clipping",
+    "bwa_aln",
+    "samtools_flagstat",
+    "markduplicates",
+    "dedup",
+    "preseq",
+    "damageprofiler",
+    "qualimap",
+    "genotyping_pileupcaller",
+    "eigenstrat_snp_coverage",
+]
+input = []
+output = ["results/multiqc/multiqc_report.html"]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/multiqc
+cd results/multiqc
+# fastqc (raw, pre-trimming)
+mkdir -p fastqc_raw
+cp -f "$ROOT"/results/fastqc/input_fastq/zips/*_raw_fastqc.zip fastqc_raw/ 2>/dev/null || true
+# fastqc (post-trimming)
+mkdir -p fastqc
+cp -f "$ROOT"/results/fastqc/after_clipping/zips/*.combined*_fastqc.zip fastqc/ 2>/dev/null || true
+# adapter removal
+mkdir -p adapter_removal
+cp -f "$ROOT"/results/adapterremoval/output/*.settings adapter_removal/ 2>/dev/null || true
+# flagstat
+mkdir -p flagstat
+cp -f "$ROOT"/results/samtools/stats/*_flagstat.stats flagstat/ 2>/dev/null || true
+# preseq
+mkdir -p preseq
+cp -f "$ROOT"/results/preseq/*.preseq preseq/ 2>/dev/null || true
+# damageprofiler (per-sample dirs, as upstream publishes them)
+for d in "$ROOT"/results/damageprofiler/*/; do
+  [ -d "$d" ] || continue
+  mkdir -p "damageprofiler/$(basename "$d")"
+  cp -f "$d"dmgprof.json "damageprofiler/$(basename "$d")/" 2>/dev/null || true
+done
+# qualimap
+for d in "$ROOT"/results/qualimap/*/; do
+  [ -d "$d" ] || continue
+  cp -rf "$d" qualimap/ 2>/dev/null || true
+done
+# markduplicates (picard module)
+mkdir -p markdup
+for s in $(echo {config.samples_list} | tr ',' ' '); do
+  cp -f "$ROOT/results/deduplication/$s/${s}_rmdup.metrics" markdup/ 2>/dev/null || true
+done
+# dedup (alternative dedupper)
+mkdir -p dedup
+for s in $(echo {config.samples_list} | tr ',' ' '); do
+  cp -f "$ROOT/results/deduplication/$s/${s}.dedup.json" dedup/ 2>/dev/null || true
+done
+# fastp (poly-G filter)
+mkdir -p fastp
+cp -f "$ROOT"/results/FastP/*_polyg_fastp.json fastp/ 2>/dev/null || true
+# genotyping (eigenstrat coverage)
+mkdir -p genotyping
+cp -f "$ROOT"/results/genotyping/*_mqc.json genotyping/ 2>/dev/null || true
+# eager logo (custom_logo in multiqc_config.yaml)
+cp -f "$ROOT/assets/nf-core_eager_logo_outline_drop.png" . 2>/dev/null || true
+multiqc -f --config "$ROOT/assets/multiqc_config.yaml" .
+'''
+tags = ["report"]
+
+[rules.resources]
+threads = 1
+memory = "8G"
+time_limit = "4h"
