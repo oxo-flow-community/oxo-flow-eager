@@ -1,7 +1,9 @@
 {
   "name": "oxo-flow-eager",
-  "title": "nf-core eager (port)",
-  "engine": "oxo-flow",
+  "title": "Ancient DNA (aDNA): QC, mapping, damage estimation and genotyping",
+  "origin": "port",
+  "rating": "verified",
+  "engine": "nextflow",
   "source": {
     "repo": "nf-core/eager",
     "url": "https://github.com/nf-core/eager",
@@ -11,8 +13,16 @@
   },
   "created": "2026-08-15",
   "domain": "genomics",
-  "tags": ["ancient-dna", "adna", "bam", "mapping", "deduplication", "damage", "genotyping", "nf-core"],
-  "description": "oxo-flow port of the nf-core/eager pipeline: ancient DNA (aDNA) analysis with FastQC, fastp (poly-G filter, optional), AdapterRemoval read clipping/merging, BWA aln mapping, MarkDuplicates/DeDup deduplication, DamageProfiler damage estimation, Qualimap, pileupCaller genotyping (optional) and MultiQC reporting.",
+  "tags": [
+    "ancient-dna",
+    "adna",
+    "bam",
+    "mapping",
+    "deduplication",
+    "damage",
+    "genotyping",
+    "nf-core"
+  ],
   "scope": [
     "make_fasta_index",
     "make_seq_dict",
@@ -62,26 +72,38 @@
   ],
   "rule_count": 17,
   "tools": [
-    "fastqc@0.11.9",
-    "adapterremoval@2.3.2",
-    "adapterremovalfixprefix@0.0.5",
-    "bwa@0.7.17",
-    "samtools@1.12",
-    "picard@2.26.0",
-    "dedup@0.12.8",
-    "preseq@3.1.2",
-    "damageprofiler@0.4.9",
-    "qualimap@2.2.2d",
-    "sequencetools@1.5.2",
-    "eigenstratdatabasetools@1.0.2",
-    "fastp@0.20.1",
-    "pigz@2.6",
-    "multiqc@1.16",
-    "rename@1.601",
-    "python@3.9.4"
+    "fastqc",
+    "adapterremoval",
+    "adapterremovalfixprefix",
+    "bwa",
+    "samtools",
+    "picard",
+    "dedup",
+    "preseq",
+    "damageprofiler",
+    "qualimap",
+    "sequencetools",
+    "eigenstratdatabasetools",
+    "fastp",
+    "pigz",
+    "multiqc",
+    "rename",
+    "python"
   ],
-  "status": "ready",
+  "description": "Ancient DNA (aDNA) analysis in one run: FastQC raw QC, optional fastp poly-G filtering (2-colour chemistry), AdapterRemoval adapter clipping and paired-end read merging, BWA aln mapping with ancient-DNA parameters, picard MarkDuplicates (or DeDup) deduplication, preseq library-complexity curves, DamageProfiler damage estimation, Qualimap BAM QC, optional pileupCaller genotyping with eigenstrat SNP coverage, and a final MultiQC report — every rule pinned to the nf-core/eager 2.5.3 tool versions in the upstream container.",
+  "installation": {
+    "engine": "oxo-flow >= 0.11.0",
+    "toolchain": "containers (Docker/Singularity) — pinned image nfcore/eager:2.5.3 for all rules (bundles the pinned conda env from envs/eager.yaml)",
+    "requirements": [
+      "reference genome FASTA, plain and uncompressed (.gz references are not supported — upstream's unzip_reference step is not ported); the workflow builds the .fai / .dict / BWA indices itself",
+      "paired-end FASTQ pairs named <sample>_R1.fastq.gz / <sample>_R2.fastq.gz in a directory (directory input mode; sample = text before the _R1/_R2 suffix); single-end is not supported",
+      "optional — pileupCaller genotyping (run_genotyping=true genotyping_tool='pileupcaller') requires pileupcaller_snpfile and pileupcaller_bedfile; the rule fails fast without them",
+      "compute: up to 4 CPUs / 8 GB RAM per rule (bwa_aln: 4 threads / 8G; reference-index and MultiQC rules up to 8 GB; base default 1 CPU / 7 GB / 24 h)",
+      "Docker or Singularity to run the pinned container nfcore/eager:2.5.3 (not needed for validate / lint / dry-run)",
+      "disk: results/ holds reference indices, mapped BAMs and reports — size grows with the reference genome and number of samples"
+    ]
+  },
   "repo_url": "https://github.com/oxo-flow-community/oxo-flow-eager",
-  "site_page": "https://oxo-flow-community.github.io/oxo-flow-eager/",
+  "license": "Apache-2.0",
   "upstream_license": "MIT"
 }

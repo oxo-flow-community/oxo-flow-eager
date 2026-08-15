@@ -1,25 +1,118 @@
-# oxo-flow-eager — Ancient DNA (aDNA) Analysis
+# oxo-flow-eager — Ancient DNA (aDNA): QC, mapping, damage estimation and genotyping
+
+> ★ Verified · ⇄ Official port of [`nf-core/eager`](https://github.com/nf-core/eager) @ `2.5.3` — same tools, same versions, same commands. Part of the [oxo-flow-community catalog](https://oxo-flow-community.github.io/).
 
 [![CI](https://github.com/oxo-flow-community/oxo-flow-eager/actions/workflows/ci.yml/badge.svg)](https://github.com/oxo-flow-community/oxo-flow-eager/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-A fully reproducible ancient DNA analysis pipeline: raw sequencing QC,
-adapter clipping and read merging, mapping to a reference genome,
-deduplication, damage estimation, genotyping and a MultiQC report —
-ported to oxo-flow from [nf-core/eager](https://github.com/nf-core/eager).
+This workflow turns a directory of paired-end ancient DNA (aDNA) sequencing
+reads into a complete, publication-ready analysis: FastQC raw QC, an optional
+fastp poly-G complexity filter, AdapterRemoval adapter clipping and read
+merging, BWA aln mapping with ancient-DNA parameters, picard MarkDuplicates
+(or DeDup) deduplication, preseq library-complexity curves, DamageProfiler
+damage-pattern estimation, Qualimap BAM QC, optional pileupCaller genotyping
+with eigenstrat SNP coverage, and a final MultiQC report. Every rule runs the
+same pinned tool versions as the upstream pipeline, in the same container, so
+`results/` is reproducible from the same input.
+
+## Installation
+
+### 1. Install oxo-flow
+
+This workflow requires **oxo-flow >= 0.11.0**. The recommended way is the
+prebuilt release binary:
+
+```bash
+curl -fL -o oxo-flow.tar.gz \
+  https://github.com/Traitome/oxo-flow/releases/download/v0.11.0/oxo-flow-v0.11.0-x86_64-unknown-linux-gnu.tar.gz
+tar xzf oxo-flow.tar.gz
+sudo mv oxo-flow /usr/local/bin/
+```
+
+Alternatively via conda: `conda install -c bioconda oxo-flow-cli` (note: the
+bioconda package may lag behind releases). Binaries for other platforms are on
+the [releases page](https://github.com/Traitome/oxo-flow/releases).
+
+### 2. Get this workflow
+
+```bash
+git clone https://github.com/oxo-flow-community/oxo-flow-eager.git
+cd oxo-flow-eager
+```
+
+### 3. Requirements
+
+Derived from `main.oxoflow`:
+
+- **Input data** — a directory of paired-end FASTQ pairs,
+  `test/fixtures/raw/<sample>_R1.fastq.gz` and `<sample>_R2.fastq.gz`
+  (directory input mode; the sample name is the text before the `_R1`/`_R2`
+  suffix). Point the workflow at your own directory via the rule inputs.
+  Only paired-end reads are supported (the PE/SE-mixed merge branch of the
+  upstream is not ported); set `single_end = false` (the default).
+- **Reference genome** — a **plain, uncompressed FASTA** via `fasta=...`
+  (default: the bundled fixture `test/fixtures/reference/genome.fa`). The
+  workflow builds the `.fai` index, the picard sequence dictionary and the
+  BWA index itself into `results/reference_genome/`. A `.gz`-compressed FASTA
+  is **not** supported (upstream's `unzip_reference` pre-step is not ported —
+  pass a plain FASTA or the index rules fail).
+- **Optional — genotyping** (off by default): enabling
+  `run_genotyping=true genotyping_tool='pileupcaller'` requires
+  `pileupcaller_snpfile=...` (SNP file) and `pileupcaller_bedfile=...`
+  (BED file); the rule fails fast without them, mirroring upstream's
+  exit-1 check.
+- **Compute** — the largest rule needs **4 CPUs / 8 GB RAM**
+  (`bwa_aln`); the reference-index and MultiQC rules use up to 8 GB
+  (`make_seq_dict`, `make_bwa_index`, `multiqc`); the base-process default
+  is 1 CPU / 7 GB / 24 h. Memory scales with the number of samples.
+- **Tools** — the workflow runs every rule in a **single Docker container
+  with a pinned image**, `nfcore/eager:2.5.3` (one image for all rules,
+  matching upstream's `process.container`), so you need **Docker** (or
+  Singularity, via oxo-flow's container support) at runtime. No manual
+  conda environment setup: the container bundles the pinned conda tools
+  documented in `envs/eager.yaml` (the upstream `environment.yml` verbatim).
+  `validate`, `lint` and `dry-run` need no container — only a real run does.
+
+## Usage
+
+```bash
+# 1. install oxo-flow (see Installation)
+# 2. prepare data: test/fixtures/raw/<sample>_R1.fastq.gz / _R2.fastq.gz
+#    (directory input mode; sample = text before the _R1/_R2 suffix)
+# 3. preview the plan
+oxo-flow dry-run main.oxoflow
+# 4. run
+oxo-flow run main.oxoflow -j 8
+# 5. run a subset
+oxo-flow run main.oxoflow -t multiqc --samples first:2
+```
+
+Key config knobs (all upstream defaults; `KEY=VALUE` overrides work):
+
+- `skip_fastqc`, `skip_adapterremoval`, `skip_preseq`, `skip_deduplication`,
+  `skip_damage_calculation`, `skip_qualimap` — skip QC steps
+- `complexity_filter_poly_g=true` — enable the fastp poly-G filter
+  (as upstream, only samples with 2-colour chemistry are filtered:
+  also set `colour_chemistry=2`, e.g. NextSeq/NovaSeq; with the
+  default `4` no sample is filtered, exactly as upstream)
+- `dedupper='dedup'` — use DeDup instead of picard MarkDuplicates
+- `run_genotyping=true genotyping_tool='pileupcaller'` — enable pileup
+  genotyping; requires `pileupcaller_snpfile=... pileupcaller_bedfile=...`
+  (the rule fails fast without them, mirroring upstream's exit-1 check)
+- `fasta=...` — reference genome FASTA (default: bundled fixture)
+- `clip_forward_adaptor` / `clip_reverse_adaptor` — adapter sequences
+- `bwaalnn/bwaalnk/bwaalnl/bwaalno` — BWA aln parameters (Oliva et al. 2021)
 
 ## Source
 
 Ported from **[nf-core/eager](https://github.com/nf-core/eager)**, version
 `2.5.3` (MIT license), commit
-`3f9d64ced5e287391bcd5517a0c40153a01268e5`. This port is maintained
-independently and **may lag the upstream** — check the tag/commit above and
-the fidelity table below for the exact ported state. Created 2026-08-15.
-
-The port runs the same single container as upstream
-(`nfcore/eager:2.5.3`, one image for all processes, matching upstream's
-`process.container`) with the same pinned conda tool versions
-(`envs/eager.yaml` is the upstream `environment.yml` verbatim).
+`3f9d64ced5e287391bcd5517a0c40153a01268e5`. The port runs the same single
+container as upstream (`nfcore/eager:2.5.3`, one image for all processes,
+matching upstream's `process.container`) with the same pinned conda tool
+versions (`envs/eager.yaml` is the upstream `environment.yml` verbatim).
+Created 2026-08-15; this workflow may lag behind upstream releases. See
+[NOTICE.md](NOTICE.md) for attribution.
 
 ## Fidelity
 
@@ -135,59 +228,19 @@ Additional deviations from upstream (all on the default path):
   all listed above as `not ported` branches; default values are kept in
   `[config]` where a config key exists.
 
-## Quickstart
+## Test
 
 ```bash
-# 1. install oxo-flow (see Requirements)
-# 2. prepare data: test/fixtures/raw/<sample>_R1.fastq.gz / _R2.fastq.gz
-#    (directory input mode; sample = text before the _R1/_R2 suffix)
-# 3. preview the plan
-oxo-flow dry-run main.oxoflow
-# 4. run
-oxo-flow run main.oxoflow -j 8
-# 5. run a subset
-oxo-flow run main.oxoflow -t multiqc --samples first:2
+bash test/run.sh
 ```
 
-Key config knobs (all upstream defaults; `KEY=VALUE` overrides work):
-
-- `skip_fastqc`, `skip_adapterremoval`, `skip_preseq`, `skip_deduplication`,
-  `skip_damage_calculation`, `skip_qualimap` — skip QC steps
-- `complexity_filter_poly_g=true` — enable the fastp poly-G filter
-  (as upstream, only samples with 2-colour chemistry are filtered:
-  also set `colour_chemistry=2`, e.g. NextSeq/NovaSeq; with the
-  default `4` no sample is filtered, exactly as upstream)
-- `dedupper='dedup'` — use DeDup instead of picard MarkDuplicates
-- `run_genotyping=true genotyping_tool='pileupcaller'` — enable pileup
-  genotyping; requires `pileupcaller_snpfile=... pileupcaller_bedfile=...`
-  (the rule fails fast without them, mirroring upstream's exit-1 check)
-- `fasta=...` — reference genome FASTA (default: bundled fixture)
-- `clip_forward_adaptor` / `clip_reverse_adaptor` — adapter sequences
-- `bwaalnn/bwaalnk/bwaalnl/bwaalno` — BWA aln parameters (Oliva et al. 2021)
-
-## Requirements
-
-- **oxo-flow ≥ 0.11.0** — install the prebuilt binary:
-
-```bash
-curl -fL -o oxo-flow.tar.gz \
-  https://github.com/Traitome/oxo-flow/releases/download/v0.11.0/oxo-flow-v0.11.0-x86_64-unknown-linux-gnu.tar.gz
-tar xzf oxo-flow.tar.gz
-sudo mv oxo-flow /usr/local/bin/
-```
-
-- Conda users may alternatively `conda install -c bioconda oxo-flow-cli`
-  (note: the bioconda package currently lags the release binary at 0.10.2 —
-  some 0.11.0 format features may not validate).
-- Docker at runtime: the port runs the upstream container
-  `nfcore/eager:2.5.3` (all rules; the container's pinned conda env is
-  documented in `envs/eager.yaml`).
+Runs `validate`, `lint` (warnings acceptable, errors not), a `dry-run`
+that must execute, and a debug check that no literal `{wildcards}` leak
+into expanded commands. CI runs the same script on every push.
 
 ## License
 
-Apache-2.0. Copyright (c) 2026 oxo-flow-community. Upstream attribution in
-[NOTICE.md](NOTICE.md).
-
-## Community
-
-https://oxo-flow-community.github.io/
+Apache-2.0. Copyright (c) 2026 oxo-flow-community. This workflow is a port
+of [nf-core/eager](https://github.com/nf-core/eager) (MIT); upstream
+attribution in [NOTICE.md](NOTICE.md), upstream license text in
+[LICENSE.upstream](LICENSE.upstream).
