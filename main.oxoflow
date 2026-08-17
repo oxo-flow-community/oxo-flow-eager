@@ -95,9 +95,7 @@ pileupcaller_bedfile = ""
 threads = 1
 memory = "7G"
 time_limit = "24h"
-# quay.io is the nf-core primary registry; the docker-hub nfcore/ name
-# (pulled through the configured hub mirror) crawled at ~1.4KB/s live.
-environment = { docker = "quay.io/nf-core/eager:2.5.3" }
+environment = { docker = "nfcore/eager:2.5.3" }
 
 # ------------------------------------------------------------------
 # R1  MAKE_FASTA_INDEX  (sc_small: 1 cpu / 4G / 4h)
