@@ -136,7 +136,7 @@ input = ["{config.fasta}"]
 output = ["results/reference_genome/seq_dict/reference.dict"]
 shell = '''
 set -euo pipefail
-picard -Xmx{effective_memory_mb}m CreateSequenceDictionary R="{input[0]}" O=results/reference_genome/seq_dict/reference.dict
+picard -Xmx$(( {effective_memory_mb} * 3 / 4 ))m CreateSequenceDictionary R="{input[0]}" O=results/reference_genome/seq_dict/reference.dict
 '''
 tags = ["reference"]
 
@@ -287,7 +287,7 @@ cd results/adapterremoval
 AdapterRemoval --file1 "$R1" --file2 "$R2" --basename {sample}_R1_L{config.lane}.pe --gzip --threads {threads} --qualitymax {config.qualitymax} --collapse --trimns --trimqualities --adapter1 {config.clip_forward_adaptor} --adapter2 {config.clip_reverse_adaptor} --minlength {config.clip_readlength} --minquality {config.clip_min_read_quality} --minadapteroverlap {config.min_adap_overlap}
 cat {sample}_R1_L{config.lane}.pe.collapsed.gz {sample}_R1_L{config.lane}.pe.collapsed.truncated.gz {sample}_R1_L{config.lane}.pe.singleton.truncated.gz {sample}_R1_L{config.lane}.pe.pair1.truncated.gz {sample}_R1_L{config.lane}.pe.pair2.truncated.gz > output/{sample}_R1_L{config.lane}.pe.combined.tmp.fq.gz
 mv {sample}_R1_L{config.lane}.pe.settings output/{sample}_R1_L{config.lane}.pe.settings
-AdapterRemovalFixPrefix -Xmx{effective_memory_mb}m output/{sample}_R1_L{config.lane}.pe.combined.tmp.fq.gz | pigz -p $(( {threads} - 1 )) > output/{sample}_R1_L{config.lane}.pe.combined.fq.gz
+AdapterRemovalFixPrefix -Xmx$(( {effective_memory_mb} * 3 / 4 ))m output/{sample}_R1_L{config.lane}.pe.combined.tmp.fq.gz | pigz -p $(( {threads} - 1 )) > output/{sample}_R1_L{config.lane}.pe.combined.fq.gz
 '''
 tags = ["preprocessing", "adapter-trimming"]
 
@@ -404,7 +404,7 @@ set -euo pipefail
 ROOT=$PWD
 mkdir -p results/deduplication/{sample}
 cd results/deduplication/{sample}
-picard -Xmx{effective_memory_mb}m MarkDuplicates INPUT="$ROOT/{input[0]}" OUTPUT={sample}_rmdup.bam REMOVE_DUPLICATES=TRUE AS=TRUE METRICS_FILE="{sample}_rmdup.metrics" VALIDATION_STRINGENCY=SILENT
+picard -Xmx$(( {effective_memory_mb} * 3 / 4 ))m MarkDuplicates INPUT="$ROOT/{input[0]}" OUTPUT={sample}_rmdup.bam REMOVE_DUPLICATES=TRUE AS=TRUE METRICS_FILE="{sample}_rmdup.metrics" VALIDATION_STRINGENCY=SILENT
 samtools index {sample}_rmdup.bam
 '''
 tags = ["deduplication"]
@@ -439,7 +439,7 @@ ROOT=$PWD
 mkdir -p results/deduplication/{sample}
 cd results/deduplication/{sample}
 cp "$ROOT/{input[0]}" {sample}.bam
-dedup -Xmx{effective_memory_mb}m -i {sample}.bam -o . -u
+dedup -Xmx$(( {effective_memory_mb} * 3 / 4 ))m -i {sample}.bam -o . -u
 mv *.log dedup.log
 samtools sort -@ {threads} "{sample}"_rmdup.bam -o "{sample}"_rmdup.bam
 samtools index "{sample}"_rmdup.bam
@@ -508,7 +508,7 @@ set -euo pipefail
 ROOT=$PWD
 mkdir -p results/damageprofiler
 cd results/damageprofiler
-damageprofiler -Xmx{effective_memory_mb}m -i "$ROOT/{input[0]}" -r "$ROOT/{input[1]}" -l {config.damageprofiler_length} -t {config.damageprofiler_threshold} -o . -yaxis_damageplot {config.damageprofiler_yaxis}
+damageprofiler -Xmx$(( {effective_memory_mb} * 3 / 4 ))m -i "$ROOT/{input[0]}" -r "$ROOT/{input[1]}" -l {config.damageprofiler_length} -t {config.damageprofiler_threshold} -o . -yaxis_damageplot {config.damageprofiler_yaxis}
 '''
 tags = ["qc", "ancient-dna"]
 
