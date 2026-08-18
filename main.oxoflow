@@ -525,7 +525,10 @@ time_limit = "4h"
 # R14  QUALIMAP  (mc_small: 2 cpu / 4G / 4h)
 #      Verbatim: qualimap bamqc -bam <rmdup bam> -nt 2 -outdir .
 #      -outformat "HTML" --java-mem-size=4G (no snpcapture bed by
-#      default). qualimap writes <bam-base>_bamqc/qualimapReport.html.
+#      default). NOTE: this build writes the report INTO the outdir
+#      itself, and with -outdir . it exits 0 while writing nothing
+#      (live: 'Output folder already exists' + missing qualimapReport)
+#      — so point the outdir straight at the declared output dir.
 # ------------------------------------------------------------------
 [[rules]]
 name = "qualimap"
@@ -539,7 +542,7 @@ set -euo pipefail
 ROOT=$PWD
 mkdir -p results/qualimap
 cd results/qualimap
-qualimap bamqc -bam "$ROOT/{input[0]}" -nt {threads} -outdir . -outformat "HTML" --java-mem-size={memory}
+qualimap bamqc -bam "$ROOT/{input[0]}" -nt {threads} -outdir {sample}_rmdup_bamqc -outformat "HTML" --java-mem-size=$(( {effective_memory_mb} * 3 / 4 ))M
 '''
 tags = ["qc", "bam"]
 
