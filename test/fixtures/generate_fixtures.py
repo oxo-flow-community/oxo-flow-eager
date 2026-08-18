@@ -72,16 +72,18 @@ def write_sample(name, rng):
         frag = genome[start : start + insert]
         r1 = damage5p(mutate(frag[:READ_LEN], rng), rng)
         r2 = damage5p(revcomp(mutate(frag[-READ_LEN:], rng)), rng)
+        # /1 and /2 suffixes: AdapterRemoval v2 requires mate identifiers
+        # (live: 'Error reading FASTQ record at line 1; aborting').
         rid = f"@FIXTURE:read{i} {name} length={READ_LEN}"
         q = "?" * READ_LEN
-        r1_lines.append((rid, r1, q))
-        r2_lines.append((rid, r2, q))
+        r1_lines.append((rid + "/1", r1, q))
+        r2_lines.append((rid + "/2", r2, q))
         # PCR duplicates at 2-8x multiplicity for preseq's count curve
         if i % 4 == 0:
             mult = rng.choice([1, 2, 3, 7])
             for k in range(mult):
-                r1_lines.append((rid + f" dup{k}", r1, q))
-                r2_lines.append((rid + f" dup{k}", r2, q))
+                r1_lines.append((rid + f" dup{k}/1", r1, q))
+                r2_lines.append((rid + f" dup{k}/2", r2, q))
     with gzip.open(os.path.join(RAW, f"{name}_R1.fastq.gz"), "wt") as f1, gzip.open(
         os.path.join(RAW, f"{name}_R2.fastq.gz"), "wt"
     ) as f2:
