@@ -314,7 +314,11 @@ set -euo pipefail
 ROOT=$PWD
 mkdir -p results/fastqc/after_clipping
 cd results/fastqc/after_clipping
-fastqc -t {threads} -q "$ROOT/{input[0]}"
+# -o . — the nfcore/eager container's fastqc writes next to the INPUT by
+# default (same image quirk as the raw fastqc rule above; live: "mv:
+# cannot stat 'S1_R1_L0.pe.combined_fastqc.zip'", zip landed in
+# results/adapterremoval/output/).
+fastqc -t {threads} -q -o . "$ROOT/{input[0]}"
 mkdir -p zips
 mv {sample}_R1_L{config.lane}.pe.combined_fastqc.zip zips/
 '''
