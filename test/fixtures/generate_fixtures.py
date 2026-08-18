@@ -9,8 +9,11 @@ statistics. This generator emits 2000 pairs per sample drawn from ~40
 source positions (~50x per position, well above the -t 15 threshold),
 with ~25% PCR-duplicated pairs at 2-8x multiplicity (preseq lc_extrap
 needs >=4 duplicate-count levels) and 5'-end C-to-T damage so the
-damage profiles have real signal. Insert sizes 60-90bp keep the pairs
-mergeable by AdapterRemoval.
+damage profiles have real signal. Insert sizes 120-160bp keep both
+100bp mates exactly full-length with a 20-60bp overlap, so
+AdapterRemoval can collapse them (live: 60-90bp fragments made
+frag[:100] shorter than the 100-char quality string, and
+AdapterRemoval rejected every record as length-mismatched).
 
 Regenerate with:  python3 test/fixtures/generate_fixtures.py
 """
@@ -63,12 +66,12 @@ def write_sample(name, rng):
     genome = load_genome()
     g = len(genome)
     # spread the sources so positions cover the contig (strand + offsets)
-    starts = sorted(rng.sample(range(0, g - 120), SOURCE_POSITIONS))
+    starts = sorted(rng.sample(range(0, g - 200), SOURCE_POSITIONS))
     os.makedirs(RAW, exist_ok=True)
     r1_lines, r2_lines = [], []
     for i in range(PAIRS):
         start = starts[i % SOURCE_POSITIONS] + rng.randint(-3, 3)
-        insert = rng.randint(60, 90)
+        insert = rng.randint(120, 160)
         frag = genome[start : start + insert]
         r1 = damage5p(mutate(frag[:READ_LEN], rng), rng)
         r2 = damage5p(revcomp(mutate(frag[-READ_LEN:], rng)), rng)
