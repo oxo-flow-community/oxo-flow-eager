@@ -56,22 +56,47 @@ memory = "4G"
 time_limit = "4h"
 
 # ------------------------------------------------------------------
-# B2  BWAMEM — bwa mem mapper branch (params.mapper = 'bwamem').
+# B2  MAKE_BWA_INDEX + BWAMEM — bwa mem mapper branch
+#     (params.mapper = 'bwamem'). Upstream builds the bwa index in the
+#     BWA_INDEX process; the port ships it as an explicit rule so the
+#     mapper runs with its producer (live: bwa "fail to locate the index
+#     files" when the index rule was missing).
 # ------------------------------------------------------------------
+[[rules]]
+name = "make_bwa_index"
+description = "Build the bwa index (upstream BWA_INDEX)"
+when = "config.mapper == 'bwamem'"
+input = ["results/reference_genome/fasta_index/reference.fa"]
+output = ["results/reference_genome/fasta_index/reference.fa.bwt"]
+shell = '''
+set -euo pipefail
+bwa index "results/reference_genome/fasta_index/reference.fa"
+'''
+tags = ["reference"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
 [[rules]]
 name = "bwamem"
 description = "bwa mem mapping (upstream bwamem, mapper = 'bwamem')"
 when = "config.mapper == 'bwamem'"
-input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
+input = [
+    "test/fixtures/raw/{sample}_R1.fastq.gz",
+    "test/fixtures/raw/{sample}_R2.fastq.gz",
+    "results/reference_genome/fasta_index/reference.fa.bwt",
+]
 output = [
-    "results/mapping/bwamem/{sample}.mapped.bam",
-    "results/mapping/bwamem/{sample}.mapped.bam.bai",
+    "results/mapping/bwa/{sample}.mapped.bam",
+    "results/mapping/bwa/{sample}.mapped.bam.bai",
 ]
 shell = '''
 set -euo pipefail
-mkdir -p results/mapping/bwamem
-bwa mem -t {threads} "results/reference_genome/fasta_index/reference.fa" "{input[0]}" "{input[1]}" -R "@RG\\tID:ILLUMINA-{sample}_{sample}\\tSM:{sample}\\tLB:{sample}\\tPL:illumina\\tPU:ILLUMINA-{sample}-PE" | samtools sort -@ {threads} -O bam - > "results/mapping/bwamem/{sample}.mapped.bam"
-samtools index "results/mapping/bwamem/{sample}.mapped.bam"
+mkdir -p results/mapping/bwa
+bwa mem -t {threads} "results/reference_genome/fasta_index/reference.fa" "{input[0]}" "{input[1]}" -R "@RG\\tID:ILLUMINA-{sample}_{sample}\\tSM:{sample}\\tLB:{sample}\\tPL:illumina\\tPU:ILLUMINA-{sample}-PE" | samtools sort -@ {threads} -O bam - > "results/mapping/bwa/{sample}.mapped.bam"
+samtools index "results/mapping/bwa/{sample}.mapped.bam"
 '''
 tags = ["mapping"]
 
@@ -109,7 +134,11 @@ time_limit = "8h"
 name = "bowtie2"
 description = "bowtie2 mapping (upstream bowtie2, mapper = 'bowtie2')"
 when = "config.mapper == 'bowtie2'"
-input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
+input = [
+    "test/fixtures/raw/{sample}_R1.fastq.gz",
+    "test/fixtures/raw/{sample}_R2.fastq.gz",
+    "results/reference_genome/bt2_index/reference.1.bt2",
+]
 output = [
     "results/mapping/bt2/{sample}.mapped.bam",
     "results/mapping/bt2/{sample}.mapped.bam.bai",
@@ -284,7 +313,7 @@ output = ["results/endorspy/{sample}.json"]
 shell = '''
 set -euo pipefail
 mkdir -p results/endorspy
-endorS.py -o json -n {sample} "{input[0]}"
+/opt/conda/envs/nf-core-eager-2.5.3env/bin/endorS.py -o json -n {sample} "{input[0]}"
 '''
 tags = ["qc", "stats"]
 
@@ -322,14 +351,14 @@ time_limit = "24h"
 # ------------------------------------------------------------------
 [[rules]]
 name = "post_ar_fastq_trimming"
-description = "fastp post-AdapterRemoval trimming (upstream post_ar_fastq_trimming, PE)"
+description = "fastp post-AdapterRemoval trimming (upstream post_ar_fastq_trimming, PE-collapse branch: single --in1 on the combined fastq)"
 when = "config.run_post_ar_trimming"
-input = ["results/AdapterRemoval/{sample}_R1.fq.gz", "results/AdapterRemoval/{sample}_R2.fq.gz"]
-output = ["results/post_ar_fastq_trimmed/{sample}_L{config.lane}_R1_postartrimmed.fq.gz", "results/post_ar_fastq_trimmed/{sample}_L{config.lane}_R2_postartrimmed.fq.gz"]
+input = ["results/adapterremoval/output/{sample}_R1_L{config.lane}.pe.combined.fq.gz"]
+output = ["results/post_ar_fastq_trimmed/{sample}_L{config.lane}_R1_postartrimmed.fq.gz"]
 shell = '''
 set -euo pipefail
 mkdir -p results/post_ar_fastq_trimmed
-fastp --in1 "{input[0]}" --in2 "{input[1]}" --trim_front1 {config.post_ar_trim_front} --trim_tail1 {config.post_ar_trim_tail} --trim_front2 {config.post_ar_trim_front2} --trim_tail2 {config.post_ar_trim_tail2} -A -G -Q -L -w {threads} --out1 "results/post_ar_fastq_trimmed/{sample}_L{config.lane}_R1_postartrimmed.fq.gz" --out2 "results/post_ar_fastq_trimmed/{sample}_L{config.lane}_R2_postartrimmed.fq.gz"
+fastp --in1 "{input[0]}" --trim_front1 {config.post_ar_trim_front} --trim_tail1 {config.post_ar_trim_tail} -A -G -Q -L -w {threads} --out1 "results/post_ar_fastq_trimmed/{sample}_L{config.lane}_R1_postartrimmed.fq.gz"
 '''
 tags = ["fastq", "preprocessing"]
 
