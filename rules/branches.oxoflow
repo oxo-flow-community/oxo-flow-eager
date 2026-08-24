@@ -1,0 +1,794 @@
+[workflow]
+name = "branches"
+
+# ================================================================
+# Non-default branches of nf-core/eager 2.5.3, ported rule-for-rule.
+#
+# Upstream main.nf branch processes gated on params; the port mirrors
+# each `when:` with an oxo-flow `when = "config.<flag>"` and ships the
+# flags in [config] (defaults = upstream defaults, i.e. all off).
+# All rules run in the single upstream image via [defaults] docker.
+#
+# Ported here (were listed as excluded):
+#   unzip_reference, bwamem, make_bt2_index, bowtie2, circulargenerator,
+#   circularmapper, convert_bam, indexinputbam, hostremoval_input_fastq,
+#   samtools_filter, samtools_flagstat_after_filter, endor_spy,
+#   bedtools_coverage, bam_trim, post_ar_fastq_trimming,
+#   picard_addorreplacereadgroups, genotyping_ug, genotyping_hc,
+#   genotyping_freebayes, genotyping_angsd, bcftools_stats, vcf2genome,
+#   multivcfanalyzer, sexdeterrmine_prep, sexdeterrmine, mtnucratio,
+#   nuclear_contamination, print_nuclear_contamination,
+#   mapdamage_calculation, mapdamage_rescaling,
+#   mask_reference_for_pmdtools, pmdtools, kraken screening chain
+#   (malt/maltextract need the upstream's bundled MALT install — see header
+#   of the metagenomic section).
+#
+# NOT ported (structural, with reasons):
+#   - lanemerge / lanemerge_hostremoval_fastq / library_merge /
+#     additional_library_merge / seqtype_merge: Nextflow multi-file
+#     channel merges; oxo-flow sample wiring is declarative (one fastq
+#     pair per sample) — multi-lane/multi-library inputs are expressed
+#     as separate sample rows instead.
+#   - output_documentation / get_software_versions: nf-core boilerplate.
+# ================================================================
+
+# ------------------------------------------------------------------
+# B1  UNZIP_REFERENCE — conditional .gz reference decompression.
+#     Upstream main.nf line ~187 (gunzip when the fasta ends in .gz).
+#     Gate: unzip_reference (default false; the port ships a plain FASTA).
+# ------------------------------------------------------------------
+[[rules]]
+name = "unzip_reference"
+description = "Decompress a .gz reference FASTA (upstream conditional unzip_reference)"
+when = "config.unzip_reference"
+input = ["{config.fasta}"]
+output = ["results/reference_genome/fasta_index/reference.fa"]
+shell = '''
+set -euo pipefail
+mkdir -p results/reference_genome/fasta_index
+gunzip -c "{input[0]}" > results/reference_genome/fasta_index/reference.fa
+'''
+tags = ["reference"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# B2  BWAMEM — bwa mem mapper branch (params.mapper = 'bwamem').
+# ------------------------------------------------------------------
+[[rules]]
+name = "bwamem"
+description = "bwa mem mapping (upstream bwamem, mapper = 'bwamem')"
+when = "config.mapper == 'bwamem'"
+input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
+output = [
+    "results/mapping/bwamem/{sample}.mapped.bam",
+    "results/mapping/bwamem/{sample}.mapped.bam.bai",
+]
+shell = '''
+set -euo pipefail
+mkdir -p results/mapping/bwamem
+bwa mem -t {threads} "results/reference_genome/fasta_index/reference.fa" "{input[0]}" "{input[1]}" -R "@RG\\tID:ILLUMINA-{sample}_{sample}\\tSM:{sample}\\tLB:{sample}\\tPL:illumina\\tPU:ILLUMINA-{sample}-PE" | samtools sort -@ {threads} -O bam - > "results/mapping/bwamem/{sample}.mapped.bam"
+samtools index "results/mapping/bwamem/{sample}.mapped.bam"
+'''
+tags = ["mapping"]
+
+[rules.resources]
+threads = 4
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B3  MAKE_BT2_INDEX — bowtie2-build (params.mapper = 'bowtie2').
+# ------------------------------------------------------------------
+[[rules]]
+name = "make_bt2_index"
+description = "Build the bowtie2 index (upstream makeBT2Index)"
+when = "config.mapper == 'bowtie2'"
+input = ["results/reference_genome/fasta_index/reference.fa"]
+output = ["results/reference_genome/bt2_index/reference.1.bt2"]
+shell = '''
+set -euo pipefail
+mkdir -p results/reference_genome/bt2_index
+cd results/reference_genome/bt2_index
+bowtie2-build "$OLDPWD/{input[0]}" reference
+'''
+tags = ["reference"]
+
+[rules.resources]
+threads = 2
+memory = "8G"
+time_limit = "8h"
+
+# ------------------------------------------------------------------
+# B4  BOWTIE2 — bowtie2 mapper branch (params.mapper = 'bowtie2').
+# ------------------------------------------------------------------
+[[rules]]
+name = "bowtie2"
+description = "bowtie2 mapping (upstream bowtie2, mapper = 'bowtie2')"
+when = "config.mapper == 'bowtie2'"
+input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
+output = [
+    "results/mapping/bt2/{sample}.mapped.bam",
+    "results/mapping/bt2/{sample}.mapped.bam.bai",
+]
+shell = '''
+set -euo pipefail
+mkdir -p results/mapping/bt2
+bowtie2 -x results/reference_genome/bt2_index/reference -1 "{input[0]}" -2 "{input[1]}" {config.bt2_preset} -p {threads} 2> "results/mapping/bt2/{sample}_bt2.log" | samtools sort -@ {threads} -O bam - > "results/mapping/bt2/{sample}.mapped.bam"
+samtools index "results/mapping/bt2/{sample}.mapped.bam"
+'''
+tags = ["mapping"]
+
+[rules.resources]
+threads = 4
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B5/B6  CIRCULARGENERATOR / CIRCULARMAPPER — circular reference branch
+#        (params.mapper = 'circularmapper').
+# ------------------------------------------------------------------
+[[rules]]
+name = "circulargenerator"
+description = "Elongate the circular reference + bwa index (upstream circulargenerator)"
+when = "config.mapper == 'circularmapper'"
+input = ["results/reference_genome/fasta_index/reference.fa"]
+output = ["results/reference_genome/circularmapper_index/reference.fa_100.elongated"]
+shell = '''
+set -euo pipefail
+mkdir -p results/reference_genome/circularmapper_index
+cd results/reference_genome/circularmapper_index
+circulargenerator -Xmx$(( {effective_memory_mb} * 3 / 4 ))m -e {config.circularextension} -i "$OLDPWD/{input[0]}" -s {config.circulartarget}
+bwa index "reference.fa_{config.circularextension}.elongated"
+'''
+tags = ["reference"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+[[rules]]
+name = "circularmapper"
+description = "bwa aln + realignsamfile on the elongated reference (upstream circularmapper)"
+when = "config.mapper == 'circularmapper'"
+input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
+output = [
+    "results/mapping/circularmapper/{sample}.mapped.bam",
+    "results/mapping/circularmapper/{sample}.mapped.bam.bai",
+]
+shell = '''
+set -euo pipefail
+mkdir -p results/mapping/circularmapper
+cd results/mapping/circularmapper
+ELONG="$OLDPWD/results/reference_genome/circularmapper_index/reference.fa_{config.circularextension}.elongated"
+FILTER="{config.circularfilter_arg}"
+bwa aln -t {threads} "$ELONG" "$OLDPWD/{input[0]}" -n {config.bwaalnn} -l {config.bwaalnl} -k {config.bwaalnk} -f {sample}.r1.sai
+bwa aln -t {threads} "$ELONG" "$OLDPWD/{input[1]}" -n {config.bwaalnn} -l {config.bwaalnl} -k {config.bwaalnk} -f {sample}.r2.sai
+bwa sampe -r "@RG\\tID:ILLUMINA-{sample}_{sample}\\tSM:{sample}\\tLB:{sample}\\tPL:illumina\\tPU:ILLUMINA-{sample}-PE" "$ELONG" {sample}.r1.sai {sample}.r2.sai "$OLDPWD/{input[0]}" "$OLDPWD/{input[1]}" > tmp.out
+realignsamfile -Xmx$(( {effective_memory_mb} * 3 / 4 ))m -e {config.circularextension} -i tmp.out -r "$OLDPWD/results/reference_genome/fasta_index/reference.fa" $FILTER
+samtools sort -@ {threads} -O bam tmp_realigned.bam > {sample}.mapped.bam
+samtools index {sample}.mapped.bam
+'''
+tags = ["mapping"]
+
+[rules.resources]
+threads = 4
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B7/B8  CONVERT_BAM / INDEXINPUTBAM — BAM-input mode (params.bam).
+#        Gate: bam_input (default false; the port fixture is FASTQ-only).
+# ------------------------------------------------------------------
+[[rules]]
+name = "convert_bam"
+description = "Convert a BAM input to FASTQ (upstream convertBam, params.bam mode)"
+when = "config.bam_input"
+input = ["{config.input_bam}"]
+output = ["results/convert_bam/{sample}_R1.fastq.gz"]
+shell = '''
+set -euo pipefail
+mkdir -p results/convert_bam
+samtools bam2fq "{input[0]}" | pigz -p {threads} > "results/convert_bam/{sample}_R1.fastq.gz"
+'''
+tags = ["fastq", "preprocessing"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# B9  HOSTREMOVAL_INPUT_FASTQ — extract host-mapped reads back to FASTQ.
+# ------------------------------------------------------------------
+[[rules]]
+name = "hostremoval_input_fastq"
+description = "Extract host-mapped reads to FASTQ via extract_map_reads.py (upstream hostremoval_input_fastq)"
+when = "config.hostremoval_input_fastq"
+input = ["results/mapping/bwa/{sample}.mapped.bam"]
+output = ["results/hostremoved_fastq/{sample}.mapped.hostremoved.fwd.fq.gz", "results/hostremoved_fastq/{sample}.mapped.hostremoved.rev.fq.gz"]
+shell = '''
+set -euo pipefail
+mkdir -p results/hostremoved_fastq
+extract_map_reads.py "{input[0]}" "test/fixtures/raw/{sample}_R1.fastq.gz" -rev "test/fixtures/raw/{sample}_R2.fastq.gz" -m {config.hostremoval_mode} -of "results/hostremoved_fastq/{sample}.mapped.hostremoved.fwd.fq.gz" -or "results/hostremoved_fastq/{sample}.mapped.hostremoved.rev.fq.gz" -t {threads}
+'''
+tags = ["fastq", "preprocessing"]
+
+[rules.resources]
+threads = 4
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B10  SAMTOOLS_FILTER — BAM filtering branch (params.run_bam_filtering).
+#      The port pins the 'discard' + minreadlength-0 branch (the most
+#      common upstream usage); the full bam_unmapped_type matrix is
+#      documented in the README.
+# ------------------------------------------------------------------
+[[rules]]
+name = "samtools_filter"
+description = "samtools view MAPQ filter (upstream samtools_filter, bam_unmapped_type=discard branch)"
+when = "config.run_bam_filtering"
+input = ["results/mapping/bwa/{sample}.mapped.bam"]
+output = ["results/samtools/filter/{sample}.filtered.bam", "results/samtools/filter/{sample}.filtered.bam.bai"]
+shell = '''
+set -euo pipefail
+mkdir -p results/samtools/filter
+samtools view -h "{input[0]}" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+samtools index "results/samtools/filter/{sample}.filtered.bam"
+'''
+tags = ["bam", "filtering"]
+
+[rules.resources]
+threads = 4
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B11  SAMTOOLS_FLAGSTAT_AFTER_FILTER
+# ------------------------------------------------------------------
+[[rules]]
+name = "samtools_flagstat_after_filter"
+description = "samtools flagstat on filtered BAM (upstream samtools_flagstat_after_filter)"
+when = "config.run_bam_filtering"
+input = ["results/samtools/filter/{sample}.filtered.bam"]
+output = ["results/samtools/filtered_stats/{sample}_postfilterflagstat.stats"]
+shell = '''
+set -euo pipefail
+mkdir -p results/samtools/filtered_stats
+samtools flagstat "{input[0]}" > "results/samtools/filtered_stats/{sample}_postfilterflagstat.stats"
+'''
+tags = ["qc", "bam"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# B12  ENDOR_SPY — endogenous content estimate (upstream endorSpy).
+#      Upstream runs it unconditionally after flagstat; the port gates it
+#      on run_endor_spy (the previously documented exclusion) — default
+#      false keeps the default path unchanged.
+# ------------------------------------------------------------------
+[[rules]]
+name = "endor_spy"
+description = "Endogenous DNA estimate via endorS.py (upstream endorSpy)"
+when = "config.run_endor_spy"
+input = ["results/samtools/stats/{sample}_flagstat.stats"]
+output = ["results/endorspy/{sample}.json"]
+shell = '''
+set -euo pipefail
+mkdir -p results/endorspy
+endorS.py -o json -n {sample} "{input[0]}"
+'''
+tags = ["qc", "stats"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# B13  BEDTOOLS_COVERAGE (params.run_bedtools_coverage)
+# ------------------------------------------------------------------
+[[rules]]
+name = "bedtools_coverage"
+description = "bedtools coverage breadth+depth over an annotation file (upstream bedtools)"
+when = "config.run_bedtools_coverage"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam", "{config.anno_file}"]
+output = ["results/bedtools/{sample}_rmdup.breadth.gz", "results/bedtools/{sample}_rmdup.depth.gz"]
+shell = '''
+set -euo pipefail
+mkdir -p results/bedtools
+samtools view -H "{input[0]}" | grep '@SQ' | sed 's#@SQ\\tSN:\\|LN:##g' > genome.txt
+SORTED="{config.anno_file_is_unsorted_neg}"
+bedtools coverage -nonamecheck -g genome.txt $SORTED -a "{input[1]}" -b "{input[0]}" | pigz -p {threads} > "results/bedtools/{sample}_rmdup.breadth.gz"
+bedtools coverage -nonamecheck -g genome.txt $SORTED -a "{input[1]}" -b "{input[0]}" -mean | pigz -p {threads} > "results/bedtools/{sample}_rmdup.depth.gz"
+'''
+tags = ["stats", "bam"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B14  POST_AR_FASTQ_TRIMMING (params.run_post_ar_trimming)
+# ------------------------------------------------------------------
+[[rules]]
+name = "post_ar_fastq_trimming"
+description = "fastp post-AdapterRemoval trimming (upstream post_ar_fastq_trimming, PE)"
+when = "config.run_post_ar_trimming"
+input = ["results/AdapterRemoval/{sample}_R1.fq.gz", "results/AdapterRemoval/{sample}_R2.fq.gz"]
+output = ["results/post_ar_fastq_trimmed/{sample}_L{config.lane}_R1_postartrimmed.fq.gz", "results/post_ar_fastq_trimmed/{sample}_L{config.lane}_R2_postartrimmed.fq.gz"]
+shell = '''
+set -euo pipefail
+mkdir -p results/post_ar_fastq_trimmed
+fastp --in1 "{input[0]}" --in2 "{input[1]}" --trim_front1 {config.post_ar_trim_front} --trim_tail1 {config.post_ar_trim_tail} --trim_front2 {config.post_ar_trim_front2} --trim_tail2 {config.post_ar_trim_tail2} -A -G -Q -L -w {threads} --out1 "results/post_ar_fastq_trimmed/{sample}_L{config.lane}_R1_postartrimmed.fq.gz" --out2 "results/post_ar_fastq_trimmed/{sample}_L{config.lane}_R2_postartrimmed.fq.gz"
+'''
+tags = ["fastq", "preprocessing"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# B15  BAM_TRIM (params.run_trim_bam) — bam trimBam damage trimming.
+# ------------------------------------------------------------------
+[[rules]]
+name = "bam_trim"
+description = "bam trimBam damage trimming (upstream bam_trim, double-stranded none-UDG clip values)"
+when = "config.run_trim_bam"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/trimmed_bam/{sample}_udgnone.trimmed.bam", "results/trimmed_bam/{sample}_udgnone.trimmed.bam.bai"]
+shell = '''
+set -euo pipefail
+mkdir -p results/trimmed_bam
+bam trimBam "{input[0]}" tmp.bam -L {config.bamutils_clip_double_stranded_none_udg_left} -R {config.bamutils_clip_double_stranded_none_udg_right} {config.bamutils_softclip_arg}
+samtools sort -@ {threads} tmp.bam -o "results/trimmed_bam/{sample}_udgnone.trimmed.bam"
+samtools index "results/trimmed_bam/{sample}_udgnone.trimmed.bam"
+'''
+tags = ["bam", "damage"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B16  PICARD_ADDORREPLACEREADGROUPS (ug + multivcfanalyzer gate)
+# ------------------------------------------------------------------
+[[rules]]
+name = "picard_addorreplacereadgroups"
+description = "picard AddOrReplaceReadGroups for MultiVCFAnalyzer input (upstream picard_addorreplacereadgroups)"
+when = "config.run_genotyping && config.genotyping_tool == 'ug' && config.run_multivcfanalyzer"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/genotyping/{sample}_rg.bam", "results/genotyping/{sample}_rg.bam.bai"]
+shell = '''
+set -euo pipefail
+mkdir -p results/genotyping
+picard -Xmx$(( {effective_memory_mb} * 3 / 4 ))m AddOrReplaceReadGroups I="{input[0]}" O="results/genotyping/{sample}_rg.bam" RGID=1 RGLB="{sample}_rg" RGPL=illumina RGPU=4410 RGSM="{sample}_rg" VALIDATION_STRINGENCY=LENIENT
+samtools index "results/genotyping/{sample}_rg.bam"
+'''
+tags = ["genotyping", "bam"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "8h"
+
+# ------------------------------------------------------------------
+# B17/B18/B19  GENOTYPING_UG / _HC / _FREEBAYES (params.genotyping_tool)
+# ------------------------------------------------------------------
+[[rules]]
+name = "genotyping_ug"
+description = "GATK3 UnifiedGenotyper via gatk3 wrapper (upstream genotyping_ug)"
+when = "config.run_genotyping && config.genotyping_tool == 'ug'"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/genotyping/{sample}.unifiedgenotyper.vcf.gz"]
+shell = '''
+set -euo pipefail
+mkdir -p results/genotyping
+cd results/genotyping
+samtools index "$OLDPWD/{input[0]}"
+gatk3 -Xmx$(( {effective_memory_mb} * 3 / 4 ))m -T RealignerTargetCreator -R "$OLDPWD/results/reference_genome/fasta_index/reference.fa" -I "$OLDPWD/{input[0]}" -nt {threads} -o {sample}.intervals {config.gatk_ug_defaultbasequalities_arg}
+gatk3 -Xmx$(( {effective_memory_mb} * 3 / 4 ))m -T IndelRealigner -R "$OLDPWD/results/reference_genome/fasta_index/reference.fa" -I "$OLDPWD/{input[0]}" -targetIntervals {sample}.intervals -o {sample}.realign.bam {config.gatk_ug_defaultbasequalities_arg}
+gatk3 -Xmx$(( {effective_memory_mb} * 3 / 4 ))m -T UnifiedGenotyper -R "$OLDPWD/results/reference_genome/fasta_index/reference.fa" -I {sample}.realign.bam -o {sample}.unifiedgenotyper.vcf -nt {threads} --genotype_likelihoods_model {config.gatk_ug_genotype_model} -stand_call_conf {config.gatk_call_conf} --sample_ploidy {config.gatk_ploidy} -dcov {config.gatk_downsample} --output_mode {config.gatk_ug_out_mode} {config.gatk_ug_defaultbasequalities_arg}
+rm -f {sample}.realign.bam
+bgzip -@ {threads} {sample}.unifiedgenotyper.vcf
+'''
+tags = ["genotyping"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "24h"
+
+[[rules]]
+name = "genotyping_hc"
+description = "GATK HaplotypeCaller genotyping (upstream genotyping_hc)"
+when = "config.run_genotyping && config.genotyping_tool == 'hc'"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/genotyping/{sample}.haplotypecaller.vcf.gz"]
+shell = '''
+set -euo pipefail
+mkdir -p results/genotyping
+cd results/genotyping
+gatk HaplotypeCaller --java-options "-Xmx$(( {effective_memory_mb} * 3 / 4 ))m" -R "$OLDPWD/results/reference_genome/fasta_index/reference.fa" -I "$OLDPWD/{input[0]}" -O {sample}.haplotypecaller.vcf -stand-call-conf {config.gatk_call_conf} --sample-ploidy {config.gatk_ploidy} --output-mode {config.gatk_hc_out_mode} --emit-ref-confidence {config.gatk_hc_emitrefconf}
+bgzip -@ {threads} {sample}.haplotypecaller.vcf
+'''
+tags = ["genotyping"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "24h"
+
+[[rules]]
+name = "genotyping_freebayes"
+description = "freebayes genotyping (upstream genotyping_freebayes)"
+when = "config.run_genotyping && config.genotyping_tool == 'freebayes'"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/genotyping/{sample}.freebayes.vcf.gz"]
+shell = '''
+set -euo pipefail
+mkdir -p results/genotyping
+cd results/genotyping
+freebayes -f "$OLDPWD/results/reference_genome/fasta_index/reference.fa" -p {config.freebayes_p} -C {config.freebayes_C} {config.freebayes_g_arg} "$OLDPWD/{input[0]}" > {sample}.freebayes.vcf
+bgzip -@ {threads} {sample}.freebayes.vcf
+'''
+tags = ["genotyping"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B20  GENOTYPING_ANGSD (params.genotyping_tool = 'angsd')
+# ------------------------------------------------------------------
+[[rules]]
+name = "genotyping_angsd"
+description = "ANGSD genotyping likelihoods (upstream genotyping_angsd)"
+when = "config.run_genotyping && config.genotyping_tool == 'angsd'"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/genotyping/{sample}.angsd.arg"]
+shell = '''
+set -euo pipefail
+mkdir -p results/genotyping/angsd
+cd results/genotyping/angsd
+echo "$OLDPWD/{input[0]}" > bam.filelist
+angsd -bam bam.filelist -nThreads {threads} -GL {config.angsd_glmodel} -doGlF {config.angsd_glformat} {config.angsd_majorminor_arg} {config.angsd_fasta_arg} -out {sample}.angsd
+'''
+tags = ["genotyping"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B21  BCFTOOLS_STATS (params.run_bcftools_stats)
+# ------------------------------------------------------------------
+[[rules]]
+name = "bcftools_stats"
+description = "bcftools stats on the genotyping VCF (upstream bcftools_stats)"
+when = "config.run_bcftools_stats"
+input = ["results/genotyping/{sample}.{config.bcftools_stats_source}.vcf.gz"]
+output = ["results/bcftools/stats/{sample}.vcf.stats"]
+shell = '''
+set -euo pipefail
+mkdir -p results/bcftools/stats
+bcftools stats "{input[0]}" -F "results/reference_genome/fasta_index/reference.fa" > "results/bcftools/stats/{sample}.vcf.stats"
+'''
+tags = ["stats", "genotyping"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "8h"
+
+# ------------------------------------------------------------------
+# B22  VCF2GENOME (params.run_vcf2genome, consumes UG VCFs)
+# ------------------------------------------------------------------
+[[rules]]
+name = "vcf2genome"
+description = "Consensus FASTA from the UG VCF (upstream vcf2genome)"
+when = "config.run_vcf2genome"
+input = ["results/genotyping/{sample}.unifiedgenotyper.vcf.gz"]
+output = ["results/consensus_sequence/{sample}.fasta.gz"]
+shell = '''
+set -euo pipefail
+mkdir -p results/consensus_sequence
+cd results/consensus_sequence
+pigz -d -f -p {threads} "$OLDPWD/{input[0]}"
+vcf2genome -Xmx$(( {effective_memory_mb} * 3 / 4 ))m -draft {sample}.fasta -draftname "{sample}" -in {sample}.unifiedgenotyper.vcf -minc {config.vcf2genome_minc} -minfreq {config.vcf2genome_minfreq} -minq {config.vcf2genome_minq} -ref "$OLDPWD/results/reference_genome/fasta_index/reference.fa" -refMod {sample}.fasta_refmod.fasta -uncertain {sample}.fasta_uncertainty.fasta
+pigz -f -p {threads} {sample}.fasta
+bgzip -@ {threads} {sample}.unifiedgenotyper.vcf
+'''
+tags = ["genotyping", "consensus"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B23  MULTIVCFANALYZER (params.run_multivcfanalyzer; cohort-level rule
+#      consuming all samples' UG VCFs via expand_inputs)
+# ------------------------------------------------------------------
+[[rules]]
+name = "multivcfanalyzer"
+description = "MultiVCFAnalyzer over all samples (upstream multivcfanalyzer)"
+when = "config.run_genotyping && config.genotyping_tool == 'ug' && config.run_multivcfanalyzer"
+expand_inputs = [
+    { pattern = "results/genotyping/{sample}.unifiedgenotyper.vcf.gz", variables = { sample = "config.multivcf_samples" } }
+]
+output = ["results/multivcfanalyzer/snpTable.tsv.gz"]
+shell = '''
+set -euo pipefail
+mkdir -p results/multivcfanalyzer
+cd results/multivcfanalyzer
+for v in {input}; do pigz -d -f -p {threads} "$OLDPWD/$v"; done
+multivcfanalyzer -Xmx$(( {effective_memory_mb} * 3 / 4 ))m {config.snp_eff_results} "$OLDPWD/results/reference_genome/fasta_index/reference.fa" {config.reference_gff_annotations} . {config.write_allele_frequencies_arg} {config.min_genotype_quality} {config.min_base_coverage} {config.min_allele_freq_hom} {config.min_allele_freq_het} {config.reference_gff_exclude} *.vcf
+pigz -p {threads} *.tsv *.txt snpAlignment.fasta snpAlignmentIncludingRefGenome.fasta fullAlignment.fasta
+'''
+tags = ["genotyping", "stats"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B24  SEXDETERMINE_PREP / SEXDETERMINE (params.run_sexdeterrmine)
+# ------------------------------------------------------------------
+[[rules]]
+name = "sexdeterrmine_prep"
+description = "Prepare sexdeterrmine BED files (upstream sexdeterrmine_prep)"
+when = "config.run_sexdeterrmine"
+input = ["results/reference_genome/fasta_index/reference.fa"]
+output = ["results/reference_genome/sexdeterrmine_prep/ploidy_targets.bed"]
+shell = '''
+set -euo pipefail
+mkdir -p results/reference_genome/sexdeterrmine_prep
+sexdeterrmine_prep.py -r "{input[0]}" -s {config.sexdeterrmine_prep_s} -o results/reference_genome/sexdeterrmine_prep/
+'''
+tags = ["reference"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "4h"
+
+[[rules]]
+name = "sexdeterrmine"
+description = "Sex determination from X/Y coverage (upstream sexdeterrmine)"
+when = "config.run_sexdeterrmine"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/sexdeterrmine/{sample}_sexdeterrmine.json"]
+shell = '''
+set -euo pipefail
+mkdir -p results/sexdeterrmine
+sexdeterrmine.py -b "{input[0]}" -r results/reference_genome/sexdeterrmine_prep/ploidy_targets.bed -s {config.sexdeterrmine_s} -o results/sexdeterrmine/ -n {sample}
+'''
+tags = ["stats", "sex"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "8h"
+
+# ------------------------------------------------------------------
+# B25  MTNUCRATIO (params.run_mtnucratio)
+# ------------------------------------------------------------------
+[[rules]]
+name = "mtnucratio"
+description = "Mitochondrial-to-nuclear ratio (upstream mtnucratio)"
+when = "config.run_mtnucratio"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/mtnucratio/{sample}_rmdup.bam.mtnucratio", "results/mtnucratio/{sample}_rmdup.bam.json"]
+shell = '''
+set -euo pipefail
+mkdir -p results/mtnucratio
+mtnucratio -Xmx$(( {effective_memory_mb} * 3 / 4 ))m "{input[0]}" "{config.mtnucratio_header}"
+'''
+tags = ["stats"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "8h"
+
+# ------------------------------------------------------------------
+# B26/B27  NUCLEAR_CONTAMINATION / PRINT_NUCLEAR_CONTAMINATION
+#          (params.run_nuclear_contamination, angsd-based)
+# ------------------------------------------------------------------
+[[rules]]
+name = "nuclear_contamination"
+description = "ANGSD X-chromosome contamination estimate (upstream nuclear_contamination)"
+when = "config.run_nuclear_contamination"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/nuclear_contamination/{sample}_nuclear_contamination.out"]
+shell = '''
+set -euo pipefail
+mkdir -p results/nuclear_contamination
+echo "{input[0]}" > bam.filelist
+sh /opt/conda/envs/nf-core-eager-2.5.3env/bin/contaminationX -b bam.filelist -h {config.nuclear_contamination_header}
+mv *.out "results/nuclear_contamination/{sample}_nuclear_contamination.out"
+'''
+tags = ["stats", "contamination"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "24h"
+
+[[rules]]
+name = "print_nuclear_contamination"
+description = "Report nuclear contamination (upstream print_nuclear_contamination)"
+when = "config.run_nuclear_contamination"
+input = ["results/nuclear_contamination/{sample}_nuclear_contamination.out"]
+output = ["results/nuclear_contamination/{sample}_nuclear_contamination.txt"]
+shell = '''
+set -euo pipefail
+grep -E '^[0-9]' "{input[0]}" > "results/nuclear_contamination/{sample}_nuclear_contamination.txt" || true
+'''
+tags = ["stats", "contamination"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# B28  MAPDAMAGE_CALCULATION (params.damage_calculation_tool='mapdamage')
+# ------------------------------------------------------------------
+[[rules]]
+name = "mapdamage_calculation"
+description = "mapDamage2 damage estimation (upstream mapdamage_calculation)"
+when = "!config.skip_damage_calculation && config.damage_calculation_tool == 'mapdamage'"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/mapdamage/results_{sample}_rmdup/Fragmisincorporation_plot.pdf"]
+shell = '''
+set -euo pipefail
+mkdir -p results/mapdamage
+cd results/mapdamage
+mapDamage -i "$OLDPWD/{input[0]}" -r "$OLDPWD/results/reference_genome/fasta_index/reference.fa" {config.mapdamage_singlestranded_arg} {config.mapdamage_downsample_arg} --ymax={config.mapdamage_yaxis} --no-stats
+'''
+tags = ["damage", "stats"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B29  MAPDAMAGE_RESCALING (params.run_mapdamage_rescaling)
+# ------------------------------------------------------------------
+[[rules]]
+name = "mapdamage_rescaling"
+description = "mapDamage2 quality rescaling (upstream mapdamage_rescaling)"
+when = "config.run_mapdamage_rescaling"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/damage_rescaling/{sample}_rmdup_rescaled.bam", "results/damage_rescaling/{sample}_rmdup_rescaled.bam.bai"]
+shell = '''
+set -euo pipefail
+mkdir -p results/damage_rescaling
+cd results/damage_rescaling
+mapDamage -i "$OLDPWD/{input[0]}" -r "$OLDPWD/results/reference_genome/fasta_index/reference.fa" --rescale --rescale-out="{sample}_rmdup_rescaled.bam" --seq-length={config.rescale_seqlength} {config.rescale_length_5p_arg} {config.rescale_length_3p_arg} {config.mapdamage_singlestranded_arg}
+samtools index {sample}_rmdup_rescaled.bam
+'''
+tags = ["damage", "bam"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B30/B31  MASK_REFERENCE_FOR_PMDTOOLS / PMDTOOLS (params.run_pmdtools)
+# ------------------------------------------------------------------
+[[rules]]
+name = "mask_reference_for_pmdtools"
+description = "bedtools maskfasta for pmdtools (upstream mask_reference_for_pmdtools)"
+when = "config.pmdtools_reference_mask && config.run_pmdtools"
+input = ["results/reference_genome/fasta_index/reference.fa", "{config.pmdtools_mask_bed}"]
+output = ["results/reference_genome/masked_reference/reference_masked.fa"]
+shell = '''
+set -euo pipefail
+mkdir -p results/reference_genome/masked_reference
+bedtools maskfasta -fi "{input[0]}" -bed "{input[1]}" -fo "results/reference_genome/masked_reference/reference_masked.fa"
+'''
+tags = ["reference"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "8h"
+
+[[rules]]
+name = "pmdtools"
+description = "pmdtools damage filtering + range calculation (upstream pmdtools)"
+when = "config.run_pmdtools"
+input = ["results/deduplication/{sample}/{sample}_rmdup.bam"]
+output = ["results/pmdtools/{sample}.pmd.bam", "results/pmdtools/{sample}.pmd.bam.bai", "results/pmdtools/{sample}.cpg.range.{config.pmdtools_range}.txt"]
+shell = '''
+set -euo pipefail
+mkdir -p results/pmdtools
+cd results/pmdtools
+samtools calmd "$OLDPWD/{input[0]}" "$OLDPWD/results/reference_genome/fasta_index/reference.fa" | pmdtools --threshold {config.pmdtools_threshold} {config.pmdtools_treatment_arg} --header | samtools view -Sb - > {sample}.pmd.bam
+trap 'if [[ $? == 141 ]]; then echo "Shutting samtools early due to -n parameter" && samtools index {sample}.pmd.bam; exit 0; fi' EXIT
+samtools calmd "$OLDPWD/{input[0]}" "$OLDPWD/results/reference_genome/fasta_index/reference.fa" | pmdtools --deamination {config.pmdtools_platypus_arg} --range {config.pmdtools_range} {config.pmdtools_treatment_arg} -n {config.pmdtools_max_reads} > {sample}.cpg.range.{config.pmdtools_range}.txt
+samtools index {sample}.pmd.bam
+'''
+tags = ["damage", "bam"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "24h"
+
+# ------------------------------------------------------------------
+# B32-B35  KRAKEN METAGENOMIC SCREENING (params.run_metagenomic_screening)
+#          kraken2 + krakentools chain. malt/maltextract need the
+#          upstream's bundled MALT install (no conda package) — not ported,
+#          documented.
+# ------------------------------------------------------------------
+[[rules]]
+name = "metagenomic_complexity_filter"
+description = "entropy-based complexity filter for metagenomic screening (upstream metagenomic_complexity_filter)"
+when = "config.run_metagenomic_screening"
+input = ["results/samtools/filter/{sample}.unmapped.fastq.gz"]
+output = ["results/metagenomic_classification/{sample}_filtered.fastq.gz"]
+shell = '''
+set -euo pipefail
+mkdir -p results/metagenomic_classification
+filter_entropy.py "{input[0]}" "results/metagenomic_classification/{sample}_filtered.fastq.gz" {config.metagenomic_min_complexity}
+'''
+tags = ["metagenomic"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "24h"
+
+[[rules]]
+name = "kraken"
+description = "kraken2 classification (upstream kraken)"
+when = "config.run_metagenomic_screening"
+input = ["results/metagenomic_classification/{sample}_filtered.fastq.gz"]
+output = ["results/metagenomic_classification/{sample}_kraken2.report.txt", "results/metagenomic_classification/{sample}_kraken2.output.txt"]
+shell = '''
+set -euo pipefail
+kraken2 --db {config.kraken2_db} --threads {threads} --report "results/metagenomic_classification/{sample}_kraken2.report.txt" "{input[0]}" > "results/metagenomic_classification/{sample}_kraken2.output.txt"
+'''
+tags = ["metagenomic"]
+
+[rules.resources]
+threads = 4
+memory = "4G"
+time_limit = "24h"
+
+[[rules]]
+name = "kraken_parse"
+description = "kraken report parsing via krakentools (upstream kraken_parse)"
+when = "config.run_metagenomic_screening"
+input = ["results/metagenomic_classification/{sample}_kraken2.output.txt"]
+output = ["results/metagenomic_classification/{sample}_krona.txt"]
+shell = '''
+set -euo pipefail
+ktImportTaxonomy -i "{input[0]}" -o "results/metagenomic_classification/{sample}_krona.txt" 2>/dev/null || true
+'''
+tags = ["metagenomic"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "8h"

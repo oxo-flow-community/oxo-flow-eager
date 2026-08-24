@@ -91,11 +91,100 @@ pileupcaller_min_base_quality = 30
 pileupcaller_snpfile = ""
 pileupcaller_bedfile = ""
 
+# --- non-default branches (upstream params, all off by default) ----------
+# see rules/branches.oxoflow for the ported rules + the structural
+# exclusions (lane/library merging, nf-core boilerplate).
+unzip_reference = false
+bam_input = false
+input_bam = ""
+hostremoval_input_fastq = false
+hostremoval_mode = "mapped"
+run_bam_filtering = false
+bam_mapping_quality_threshold = 0
+run_endor_spy = false
+run_bedtools_coverage = false
+anno_file = ""
+anno_file_is_unsorted_neg = "-sorted"
+run_post_ar_trimming = false
+post_ar_trim_front = 0
+post_ar_trim_tail = 0
+post_ar_trim_front2 = 0
+post_ar_trim_tail2 = 0
+run_trim_bam = false
+bamutils_clip_double_stranded_none_udg_left = 1
+bamutils_clip_double_stranded_none_udg_right = 1
+bamutils_softclip_arg = ""
+bt2_preset = ""
+circularextension = 100
+circulartarget = "chrMT"
+circularfilter_arg = ""
+gatk_call_conf = 30
+gatk_ploidy = 2
+gatk_downsample = 250
+gatk_ug_genotype_model = "SNP"
+gatk_ug_out_mode = "EMIT_VARIANTS_ONLY"
+gatk_ug_defaultbasequalities_arg = ""
+gatk_hc_out_mode = "EMIT_VARIANTS_ONLY"
+gatk_hc_emitrefconf = "NONE"
+freebayes_p = 1
+freebayes_C = 2
+freebayes_g_arg = ""
+angsd_glmodel = "1"
+angsd_glformat = "4"
+angsd_majorminor_arg = ""
+angsd_fasta_arg = ""
+run_bcftools_stats = false
+bcftools_stats_source = "haplotypecaller"
+run_vcf2genome = false
+vcf2genome_minc = 5
+vcf2genome_minfreq = 0.5
+vcf2genome_minq = 30
+run_multivcfanalyzer = false
+multivcf_samples = ["S1", "S2"]
+snp_eff_results = ""
+reference_gff_annotations = ""
+reference_gff_exclude = ""
+write_allele_frequencies_arg = "F"
+min_genotype_quality = 0
+min_base_coverage = 0
+min_allele_freq_hom = 0.8
+min_allele_freq_het = 0.2
+run_sexdeterrmine = false
+sexdeterrmine_prep_s = 1000000
+sexdeterrmine_s = 1000000
+run_mtnucratio = false
+mtnucratio_header = ""
+run_nuclear_contamination = false
+nuclear_contamination_header = ""
+mapdamage_singlestranded_arg = ""
+mapdamage_downsample_arg = ""
+mapdamage_yaxis = 0.25
+run_mapdamage_rescaling = false
+rescale_seqlength = 12
+rescale_length_5p_arg = ""
+rescale_length_3p_arg = ""
+run_pmdtools = false
+pmdtools_reference_mask = false
+pmdtools_mask_bed = ""
+pmdtools_threshold = 3
+pmdtools_range = 10
+pmdtools_max_reads = 1000000
+pmdtools_treatment_arg = "--UDGminus"
+pmdtools_platypus_arg = ""
+run_metagenomic_screening = false
+metagenomic_min_complexity = 0.5
+kraken2_db = ""
+
 [defaults]
 threads = 1
 memory = "7G"
 time_limit = "24h"
 environment = { docker = "nfcore/eager:2.5.3" }
+
+# Non-default upstream branches (all gated off by default, mirroring the
+# upstream params): see rules/branches.oxoflow.
+[[include]]
+path = "rules/branches.oxoflow"
 
 # ------------------------------------------------------------------
 # R1  MAKE_FASTA_INDEX  (sc_small: 1 cpu / 4G / 4h)
