@@ -153,7 +153,7 @@ run_sexdeterrmine = false
 sexdeterrmine_prep_s = 1000000
 sexdeterrmine_s = 1000000
 run_mtnucratio = false
-mtnucratio_header = ""
+mtnucratio_header = "MT"
 run_nuclear_contamination = false
 nuclear_contamination_header = ""
 mapdamage_singlestranded_arg = ""
@@ -220,12 +220,17 @@ time_limit = "4h"
 # ------------------------------------------------------------------
 [[rules]]
 name = "make_seq_dict"
-description = "Create the reference sequence dictionary with picard CreateSequenceDictionary"
+description = "Create the reference sequence dictionary with picard CreateSequenceDictionary (also copied next to the fasta for the GATK branches)"
 input = ["{config.fasta}"]
-output = ["results/reference_genome/seq_dict/reference.dict"]
+output = [
+    "results/reference_genome/seq_dict/reference.dict",
+    "results/reference_genome/fasta_index/reference.dict",
+]
 shell = '''
 set -euo pipefail
+mkdir -p results/reference_genome/seq_dict
 picard -Xmx$(( {effective_memory_mb} * 3 / 4 ))m CreateSequenceDictionary R="{input[0]}" O=results/reference_genome/seq_dict/reference.dict
+cp results/reference_genome/seq_dict/reference.dict results/reference_genome/fasta_index/reference.dict
 '''
 tags = ["reference"]
 
