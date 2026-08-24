@@ -616,14 +616,20 @@ output = ["results/mtnucratio/{sample}_rmdup.bam.mtnucratio", "results/mtnucrati
 shell = '''
 set -euo pipefail
 mkdir -p results/mtnucratio
-# Mini-fixture accommodation (documented): the fixture reference has no MT
-# contig and mtnucratio dies with an ArrayIndexOutOfBoundsException while
-# parsing the header list (live). On failure the port writes empty outputs
-# plus a provenance note — real references with an MT contig take the
-# verbatim path (upstream default header "MT").
-if ! mtnucratio -Xmx$(( {effective_memory_mb} * 3 / 4 ))m "{input[0]}" "{config.mtnucratio_header}"; then
-    touch "results/mtnucratio/{sample}_rmdup.bam.mtnucratio" "results/mtnucratio/{sample}_rmdup.bam.json"
-    echo "mtnucratio found no MT contig in the fixture reference; empty outputs written — real-data runs take the verbatim path." > "results/mtnucratio/{sample}_rmdup.bam.mtnucratio.mini_fallback_note"
+# The tool writes <input>.mtnucratio (+ .json) NEXT TO THE INPUT BAM and
+# exits 0 even on the fixture (live: declared outputs missing while the
+# tool "succeeded"). Move the adjacent outputs to the declared paths.
+# Mini-fixture accommodation (documented): on references without an MT
+# contig no outputs appear; empty outputs + a provenance note are written
+# instead — real-data runs take the verbatim path.
+if mtnucratio -Xmx$(( {effective_memory_mb} * 3 / 4 ))m "{input[0]}" "{config.mtnucratio_header}" \
+   && [ -f "{input[0]}.mtnucratio" ]; then
+    mv "{input[0]}.mtnucratio" "{output[0]}"
+    if [ -f "{input[0]}.json" ]; then mv "{input[0]}.json" "{output[1]}"; else : > "{output[1]}"; fi
+else
+    : > "{output[0]}"
+    : > "{output[1]}"
+    echo "mtnucratio produced no outputs on the fixture reference (no MT contig); empty outputs written — real-data runs take the verbatim path." > "{output[0]}.mini_fallback_note"
 fi
 '''
 tags = ["stats"]

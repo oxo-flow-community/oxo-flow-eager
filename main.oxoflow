@@ -229,6 +229,7 @@ output = [
 shell = '''
 set -euo pipefail
 mkdir -p results/reference_genome/seq_dict
+rm -f results/reference_genome/seq_dict/reference.dict
 picard -Xmx$(( {effective_memory_mb} * 3 / 4 ))m CreateSequenceDictionary R="{input[0]}" O=results/reference_genome/seq_dict/reference.dict
 cp results/reference_genome/seq_dict/reference.dict results/reference_genome/fasta_index/reference.dict
 '''
