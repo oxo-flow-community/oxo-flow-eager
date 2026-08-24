@@ -241,6 +241,27 @@ Runs `validate`, `lint` (warnings acceptable, errors not), a `dry-run`
 that must execute, and a debug check that no literal `{wildcards}` leak
 into expanded commands. CI runs the same script on every push.
 
+## Live verification (tx-ubuntu, oxo-flow 0.14.1, eager docker image 2.5.3)
+
+All 14 branch smoke steps live-passed on the mini fixture:
+
+| Step | Branch | Status |
+|---|---|---|
+| E1 | default path (regression) | ✅ |
+| E2 | mapper = bwamem | ✅ |
+| E3 | mapper = bowtie2 | ✅ |
+| E4 | run_bam_filtering | ✅ |
+| E5 | run_endor_spy | ✅ |
+| E6 | run_post_ar_trimming | ✅ |
+| E7 | damage_calculation_tool = mapdamage | ✅ |
+| E8 | run_mapdamage_rescaling | ✅ |
+| E9 | run_trim_bam | ✅ |
+| E10 | run_pmdtools | ✅ |
+| E11 | genotyping = freebayes | ✅ |
+| E12 | genotyping = hc | ✅ |
+| E13 | run_bcftools_stats | ✅ |
+| E14 | run_mtnucratio (mini fallback — no MT contig in the fixture) | ✅ |
+
 ## License
 
 Apache-2.0. Copyright (c) 2026 oxo-flow-community. This workflow is a port
