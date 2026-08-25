@@ -28,6 +28,6 @@ LICENSE.upstream. (Apache-2.0 §4(d): attribution notices from the
 Source form must be retained.)
 
 Bundled upstream assets kept under their MIT license: scripts/parse_snp_cov.py
-(copyright Thiseas C. Lamnidis), assets/multiqc_config.yaml,
-assets/nf-core_eager_logo_outline_drop.png.
+(copyright Thiseas C. Lamnidis), scripts/kraken_parse.py, scripts/merge_kraken_res.py,
+assets/multiqc_config.yaml, assets/nf-core_eager_logo_outline_drop.png.
 ---------------------------------------------------------------------

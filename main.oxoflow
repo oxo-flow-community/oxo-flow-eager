@@ -100,6 +100,7 @@ input_bam = ""
 hostremoval_input_fastq = false
 hostremoval_mode = "mapped"
 run_bam_filtering = false
+bam_unmapped_type = "discard"
 bam_mapping_quality_threshold = 0
 run_endor_spy = false
 run_bedtools_coverage = false
@@ -172,8 +173,34 @@ pmdtools_max_reads = 1000000
 pmdtools_treatment_arg = "--UDGminus"
 pmdtools_platypus_arg = ""
 run_metagenomic_screening = false
-metagenomic_min_complexity = 0.5
+metagenomic_tool = ""
 kraken2_db = ""
+malt_db = ""
+metagenomic_complexity_filter = false
+metagenomic_complexity_entropy = 0.3
+metagenomic_min_support_reads = 1
+percent_identity = 85
+malt_mode = "BlastN"
+malt_alignment_mode = "SemiGlobal"
+malt_top_percent = 1
+malt_min_support_mode = "percent"
+malt_min_support_percent = 0.01
+malt_max_queries = 100
+malt_memory_mode = "load"
+malt_sam_output = false
+run_maltextract = false
+maltextract_taxon_list = ""
+maltextract_ncbifiles = ""
+maltextract_filter = "def_anc"
+maltextract_toppercent = 0.01
+maltextract_destackingoff = false
+maltextract_downsamplingoff = false
+maltextract_duplicateremovaloff = false
+maltextract_matches = false
+maltextract_megansummary = false
+maltextract_percentidentity = 85.0
+maltextract_topalignment = false
+single_stranded = false
 
 [defaults]
 threads = 1
@@ -764,6 +791,10 @@ depends_on = [
     "qualimap",
     "genotyping_pileupcaller",
     "eigenstrat_snp_coverage",
+    "metagenomic_complexity_filter",
+    "kraken",
+    "malt",
+    "maltextract",
 ]
 input = []
 output = ["results/multiqc/multiqc_report.html"]
@@ -814,6 +845,19 @@ cp -f "$ROOT"/results/FastP/*_polyg_fastp.json fastp/ 2>/dev/null || true
 # genotyping (eigenstrat coverage)
 mkdir -p genotyping
 cp -f "$ROOT"/results/genotyping/*_mqc.json genotyping/ 2>/dev/null || true
+# metagenomic complexity filter (bbduk stats; upstream stages these
+# under fastp_lowcomplexityfilter/)
+mkdir -p fastp_lowcomplexityfilter
+cp -f "$ROOT"/results/metagenomic_complexity_filter/*_bbduk.stats fastp_lowcomplexityfilter/ 2>/dev/null || true
+# malt (malt.log; MALT module)
+mkdir -p malt
+cp -f "$ROOT"/results/metagenomic_classification/malt/malt.log malt/ 2>/dev/null || true
+# kraken (kraken2_report files; Kraken module)
+mkdir -p kraken
+cp -f "$ROOT"/results/metagenomic_classification/kraken/*.kraken2_report kraken/ 2>/dev/null || true
+# hops (maltextract Wevid json; HOPs module)
+mkdir -p hops
+cp -f "$ROOT"/results/maltextract/results/*_Wevid.json hops/ 2>/dev/null || true
 # eager logo (custom_logo in multiqc_config.yaml)
 cp -f "$ROOT/assets/nf-core_eager_logo_outline_drop.png" . 2>/dev/null || true
 multiqc -f --config "$ROOT/assets/multiqc_config.yaml" .
