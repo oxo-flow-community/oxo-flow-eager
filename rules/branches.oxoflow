@@ -19,17 +19,35 @@ name = "branches"
 #   multivcfanalyzer, sexdeterrmine_prep, sexdeterrmine, mtnucratio,
 #   nuclear_contamination, print_nuclear_contamination,
 #   mapdamage_calculation, mapdamage_rescaling,
-#   mask_reference_for_pmdtools, pmdtools, kraken screening chain
-#   (malt/maltextract need the upstream's bundled MALT install — see header
-#   of the metagenomic section).
+#   mask_reference_for_pmdtools, pmdtools, and the full metagenomic
+#   screening chain: metagenomic_complexity_filter (bbduk.sh),
+#   kraken, kraken_parse, kraken_merge, malt, maltextract
+#   (decomp_kraken is folded into the kraken shell — see that rule).
+#   NOTE: malt 0.61 IS pinned in the upstream environment.yml
+#   (bioconda::malt=0.61, hoops 0.35 for MaltExtract), so the earlier
+#   "no conda package" exclusion reason does not apply to this port —
+#   the nfcore/eager:2.5.3 container carries both.
 #
 # NOT ported (structural, with reasons):
 #   - lanemerge / lanemerge_hostremoval_fastq / library_merge /
 #     additional_library_merge / seqtype_merge: Nextflow multi-file
-#     channel merges; oxo-flow sample wiring is declarative (one fastq
-#     pair per sample) — multi-lane/multi-library inputs are expressed
-#     as separate sample rows instead.
-#   - output_documentation / get_software_versions: nf-core boilerplate.
+#     channel merges. Upstream groups N lane/library files per sample
+#     (groupTuple by samplename/libraryid) and cats/samtools-merges them
+#     into one file; oxo-flow instances are driven by wildcard
+#     combinations — a rule referencing {sample} fans out one instance
+#     per sample with ONE file per input pattern, expand_inputs fans
+#     INTO a single cohort instance, and [[values]] fans out per
+#     combination. There is no primitive that groups N files of one
+#     sample into one instance's input, so multi-lane/multi-library
+#     inputs are expressed as separate sample rows instead (or
+#     pre-concatenated — upstream's own recommendation).
+#   - output_documentation / get_software_versions: nf-core template
+#     boilerplate. output_documentation renders upstream docs/output.md
+#     to HTML (unconditional upstream — porting it would change the
+#     default plan); get_software_versions scrapes the per-process
+#     versions.yml emissions of the nf-core template, which oxo-flow
+#     rules do not produce (tool versions are pinned in
+#     envs/eager.yaml / metadata.json instead).
 # ================================================================
 
 # ------------------------------------------------------------------
@@ -238,21 +256,48 @@ time_limit = "24h"
 
 # ------------------------------------------------------------------
 # B10  SAMTOOLS_FILTER — BAM filtering branch (params.run_bam_filtering).
-#      The port pins the 'discard' + minreadlength-0 branch (the most
-#      common upstream usage); the full bam_unmapped_type matrix is
-#      documented in the README.
+#      The port pins the minreadlength-0 branches; the two wired branches
+#      (default 'discard' and 'fastq' — the metagenomic-chain producer)
+#      are selected by bam_unmapped_type, exactly like upstream's
+#      if/else script matrix (main.nf lines 1676-1700). The upstream
+#      'bam'/'both' branches fail fast here (not ported). The 'discard'
+#      branch writes an EMPTY unmapped.fastq.gz placeholder because the
+#      engine requires every declared output to exist; it is never
+#      consumed — the metagenomic rules are gated on
+#      bam_unmapped_type == 'fastq' like upstream.
 # ------------------------------------------------------------------
 [[rules]]
 name = "samtools_filter"
-description = "samtools view MAPQ filter (upstream samtools_filter, bam_unmapped_type=discard branch)"
+description = "samtools view MAPQ filter (upstream samtools_filter; discard + fastq bam_unmapped_type branches, minreadlength-0)"
 when = "config.run_bam_filtering"
 input = ["results/mapping/bwa/{sample}.mapped.bam"]
-output = ["results/samtools/filter/{sample}.filtered.bam", "results/samtools/filter/{sample}.filtered.bam.bai"]
+output = [
+    "results/samtools/filter/{sample}.filtered.bam",
+    "results/samtools/filter/{sample}.filtered.bam.bai",
+    "results/samtools/filter/{sample}.unmapped.fastq.gz",
+]
 shell = '''
 set -euo pipefail
+ROOT=$PWD
 mkdir -p results/samtools/filter
-samtools view -h "{input[0]}" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
-samtools index "results/samtools/filter/{sample}.filtered.bam"
+case "{config.bam_unmapped_type}" in
+  discard)
+    samtools view -h "$ROOT/{input[0]}" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools index "results/samtools/filter/{sample}.filtered.bam"
+    : > "results/samtools/filter/{sample}.unmapped.fastq.gz"
+    ;;
+  fastq)
+    samtools view -h "$ROOT/{input[0]}" -@ {threads} -f4 -b > "results/samtools/filter/{sample}.unmapped.bam"
+    samtools view -h "$ROOT/{input[0]}" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools index "results/samtools/filter/{sample}.filtered.bam"
+    samtools fastq -tN "results/samtools/filter/{sample}.unmapped.bam" | pigz -p $(( {threads} - 1 )) > "results/samtools/filter/{sample}.unmapped.fastq.gz"
+    rm "results/samtools/filter/{sample}.unmapped.bam"
+    ;;
+  *)
+    echo "[oxo-flow-eager] error: unsupported bam_unmapped_type '{config.bam_unmapped_type}' (supported here: discard, fastq; upstream 'bam'/'both' branches are not ported)" >&2
+    exit 1
+    ;;
+esac
 '''
 tags = ["bam", "filtering"]
 
@@ -769,55 +814,119 @@ memory = "4G"
 time_limit = "24h"
 
 # ------------------------------------------------------------------
-# B32-B35  KRAKEN METAGENOMIC SCREENING (params.run_metagenomic_screening)
-#          kraken2 + krakentools chain. malt/maltextract need the
-#          upstream's bundled MALT install (no conda package) — not ported,
-#          documented.
+# B32-B37  METAGENOMIC SCREENING CHAIN
+#          (params.run_metagenomic_screening + metagenomic_tool)
+#          Verbatim ports of upstream metagenomic_complexity_filter
+#          (bbduk.sh), kraken (incl. the decomp_kraken .tar.gz DB
+#          unpack folded into the shell), kraken_parse, kraken_merge,
+#          malt and maltextract. The upstream run-level validation
+#          (main.nf 115-137: screening requires run_bam_filtering +
+#          bam_unmapped_type 'fastq'; MALT percent/reads min-support
+#          exclusivity) becomes rule gates + shell guards — oxo-flow
+#          has no params-validation stage (pileupcaller precedent).
+#          Deviations (all documented in README):
+#          - gates are attached to every rule (upstream relies on
+#            empty channels to no-op kraken_parse/kraken_merge).
+#          - the complexity-filtered fastq keeps upstream's
+#            `${fastq}_lowcomplexityremoved.fq.gz` NAME, but the
+#            kraken prefix is normalized to `{sample}.unmapped.fastq`
+#            in BOTH branches (upstream prefixes by the actual input
+#            basename; a symlink makes the filtered branch match).
+#          - the .tar.gz kraken2 DB unpack (decomp_kraken) is a shell
+#            conditional — no when-expression can test a suffix.
+#          - MALT rma6 outputs are undeclared (per-input names, no
+#            fixed template — .sai precedent); only malt.log is
+#            declared; maltextract consumes them via glob.
 # ------------------------------------------------------------------
 [[rules]]
 name = "metagenomic_complexity_filter"
-description = "entropy-based complexity filter for metagenomic screening (upstream metagenomic_complexity_filter)"
-when = "config.run_metagenomic_screening"
+description = "entropy-based complexity filter with bbduk.sh (upstream metagenomic_complexity_filter)"
+when = "config.metagenomic_complexity_filter && config.run_bam_filtering && config.bam_unmapped_type == 'fastq'"
 input = ["results/samtools/filter/{sample}.unmapped.fastq.gz"]
-output = ["results/metagenomic_classification/{sample}_filtered.fastq.gz"]
+output = [
+    "results/metagenomic_complexity_filter/{sample}.unmapped.fastq.gz_lowcomplexityremoved.fq.gz",
+    "results/metagenomic_complexity_filter/{sample}.unmapped.fastq.gz_bbduk.stats",
+]
 shell = '''
 set -euo pipefail
-mkdir -p results/metagenomic_classification
-filter_entropy.py "{input[0]}" "results/metagenomic_classification/{sample}_filtered.fastq.gz" {config.metagenomic_min_complexity}
+ROOT=$PWD
+mkdir -p results/metagenomic_complexity_filter
+cd results/metagenomic_complexity_filter
+bbduk.sh -Xmx$(( {effective_memory_mb} / 1024 ))g in="$ROOT/{input[0]}" threads={threads} entropymask=f entropy={config.metagenomic_complexity_entropy} out="{sample}.unmapped.fastq.gz_lowcomplexityremoved.fq.gz" 2> "{sample}.unmapped.fastq.gz_bbduk.stats"
 '''
 tags = ["metagenomic"]
 
 [rules.resources]
-threads = 1
+threads = 2
 memory = "4G"
-time_limit = "24h"
+time_limit = "4h"
 
 [[rules]]
 name = "kraken"
-description = "kraken2 classification (upstream kraken)"
-when = "config.run_metagenomic_screening"
-input = ["results/metagenomic_classification/{sample}_filtered.fastq.gz"]
-output = ["results/metagenomic_classification/{sample}_kraken2.report.txt", "results/metagenomic_classification/{sample}_kraken2.output.txt"]
+description = "kraken2 classification (upstream kraken, mc_huge)"
+when = "config.run_metagenomic_screening && config.run_bam_filtering && config.bam_unmapped_type == 'fastq' && config.metagenomic_tool == 'kraken'"
+depends_on = ["samtools_filter", "metagenomic_complexity_filter"]
+input = ["results/samtools/filter/{sample}.unmapped.fastq.gz"]
+output = [
+    "results/metagenomic_classification/kraken/{sample}.unmapped.fastq.kraken.out",
+    "results/metagenomic_classification/kraken/{sample}.unmapped.fastq.kraken2_report",
+    "results/metagenomic_classification/kraken/{sample}.unmapped.fastq.kreport",
+]
 shell = '''
 set -euo pipefail
-kraken2 --db {config.kraken2_db} --threads {threads} --report "results/metagenomic_classification/{sample}_kraken2.report.txt" "{input[0]}" > "results/metagenomic_classification/{sample}_kraken2.output.txt"
+ROOT=$PWD
+if [ -z "{config.kraken2_db}" ]; then
+  echo "[oxo-flow-eager] error: metagenomic screening with metagenomic_tool=kraken requires kraken2_db (kraken2 database directory or .tar.gz bundle; upstream --database is split into kraken2_db + malt_db in this port)." >&2
+  exit 1
+fi
+mkdir -p results/metagenomic_classification/kraken
+cd results/metagenomic_classification/kraken
+# Input: the entropy-filtered reads when the complexity filter is on
+# (upstream picks ch_filtered_for_metagenomic), else the raw unmapped
+# reads. A symlink normalizes the filename so the kraken2 output
+# prefixes match upstream's fastq.baseName in both branches.
+if [ "{config.metagenomic_complexity_filter}" = "true" ]; then
+  ln -sf "$ROOT/results/metagenomic_complexity_filter/{sample}.unmapped.fastq.gz_lowcomplexityremoved.fq.gz" "{sample}.unmapped.fastq.gz"
+  FQ="{sample}.unmapped.fastq.gz"
+else
+  FQ="$ROOT/{input[0]}"
+fi
+# decomp_kraken folded in: unpack a .tar.gz database bundle in place
+# (upstream DECOMP_KRAKEN process, when database ends with .tar.gz).
+DB="$ROOT/{config.kraken2_db}"
+if [[ "$DB" == *.tar.gz ]]; then
+  tar xzf "$DB"
+  DB=$(basename "$DB" .tar.gz)
+  mkdir -p "$DB"
+  mv *.k2d "$DB" || echo "nothing to do"
+  DB="$PWD/$DB"
+fi
+PREFIX=$(basename "$FQ" .gz)
+kraken2 --db "$DB" --threads {threads} --output "$PREFIX.kraken.out" --report-minimizer-data --report "$PREFIX.kraken2_report" "$FQ"
+cut -f1-3,6-8 "$PREFIX.kraken2_report" > "$PREFIX.kreport"
 '''
 tags = ["metagenomic"]
 
 [rules.resources]
 threads = 4
-memory = "4G"
+memory = "8G"
 time_limit = "24h"
 
 [[rules]]
 name = "kraken_parse"
-description = "kraken report parsing via krakentools (upstream kraken_parse)"
-when = "config.run_metagenomic_screening"
-input = ["results/metagenomic_classification/{sample}_kraken2.output.txt"]
-output = ["results/metagenomic_classification/{sample}_krona.txt"]
+description = "kraken report parsing to per-sample CSVs (upstream kraken_parse)"
+when = "config.run_metagenomic_screening && config.run_bam_filtering && config.bam_unmapped_type == 'fastq' && config.metagenomic_tool == 'kraken'"
+input = ["results/metagenomic_classification/kraken/{sample}.unmapped.fastq.kraken2_report"]
+output = [
+    "results/metagenomic_classification/kraken/{sample}.unmapped.fastq.read_kraken_parsed.csv",
+    "results/metagenomic_classification/kraken/{sample}.unmapped.fastq.kmer_kraken_parsed.csv",
+]
 shell = '''
 set -euo pipefail
-ktImportTaxonomy -i "{input[0]}" -o "results/metagenomic_classification/{sample}_krona.txt" 2>/dev/null || true
+ROOT=$PWD
+mkdir -p results/metagenomic_classification/kraken
+cd results/metagenomic_classification/kraken
+python3 "$ROOT/scripts/kraken_parse.py" -c {config.metagenomic_min_support_reads} -or "{sample}.unmapped.fastq.read_kraken_parsed.csv" -ok "{sample}.unmapped.fastq.kmer_kraken_parsed.csv" "$ROOT/{input[0]}"
 '''
 tags = ["metagenomic"]
 
@@ -825,3 +934,115 @@ tags = ["metagenomic"]
 threads = 1
 memory = "4G"
 time_limit = "8h"
+
+[[rules]]
+name = "kraken_merge"
+description = "merge per-sample kraken parse CSVs into one read-count + kmer-duplication table (upstream kraken_merge)"
+when = "config.run_metagenomic_screening && config.run_bam_filtering && config.bam_unmapped_type == 'fastq' && config.metagenomic_tool == 'kraken'"
+input = []
+expand_inputs = [
+    { pattern = "results/metagenomic_classification/kraken/{sample}.unmapped.fastq.read_kraken_parsed.csv", variables = { sample = "config.samples_list" } }
+]
+output = [
+    "results/metagenomic_classification/kraken/kraken_read_count.csv",
+    "results/metagenomic_classification/kraken/kraken_kmer_duplication.csv",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/metagenomic_classification/kraken
+cd results/metagenomic_classification/kraken
+python3 "$ROOT/scripts/merge_kraken_res.py" -or kraken_read_count.csv -ok kraken_kmer_duplication.csv
+'''
+tags = ["metagenomic"]
+
+[rules.resources]
+threads = 1
+memory = "4G"
+time_limit = "4h"
+
+[[rules]]
+name = "malt"
+description = "MALT alignment of all unmapped reads against a MALT database (upstream malt, mc_small)"
+when = "config.run_metagenomic_screening && config.run_bam_filtering && config.bam_unmapped_type == 'fastq' && config.metagenomic_tool == 'malt'"
+depends_on = ["samtools_filter", "metagenomic_complexity_filter"]
+input = []
+expand_inputs = [
+    { pattern = "results/samtools/filter/{sample}.unmapped.fastq.gz", variables = { sample = "config.samples_list" } }
+]
+output = ["results/metagenomic_classification/malt/malt.log"]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+if [ -z "{config.malt_db}" ]; then
+  echo "[oxo-flow-eager] error: metagenomic screening with metagenomic_tool=malt requires malt_db (a MALT database directory; upstream --database is split into kraken2_db + malt_db in this port)." >&2
+  exit 1
+fi
+if [ "{config.metagenomic_complexity_filter}" = "true" ]; then
+  # entropy-filtered reads (upstream names the bbduk output after the input fastq)
+  FQS=""
+  for s in $(echo {config.samples_list} | tr ',' ' '); do
+    FQS="$FQS $ROOT/results/metagenomic_complexity_filter/$s.unmapped.fastq.gz_lowcomplexityremoved.fq.gz"
+  done
+else
+  FQS=$(for f in {input}; do echo -n "$ROOT/$f "; done)
+fi
+SAM_OUT=""
+if [ "{config.malt_sam_output}" = "true" ]; then SAM_OUT="-a . -f SAM"; fi
+MIN_SUPP=""
+if [ "{config.malt_min_support_mode}" = "percent" ]; then
+  MIN_SUPP="-supp {config.malt_min_support_percent}"
+else
+  MIN_SUPP="-sup {config.metagenomic_min_support_reads}"
+fi
+mkdir -p results/metagenomic_classification/malt
+cd results/metagenomic_classification/malt
+malt-run -J-Xmx$(( {effective_memory_mb} / 1024 ))g -t {threads} -v -o . -d "$ROOT/{config.malt_db}" $SAM_OUT -id {config.percent_identity} -m {config.malt_mode} -at {config.malt_alignment_mode} -top {config.malt_top_percent} $MIN_SUPP -mq {config.malt_max_queries} --memoryMode {config.malt_memory_mode} -i $FQS 2>&1 | tee malt.log
+'''
+tags = ["metagenomic"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+[[rules]]
+name = "maltextract"
+description = "aDNA damage evaluation of MALT alignments (upstream maltextract, mc_medium)"
+when = "config.run_maltextract && config.metagenomic_tool == 'malt'"
+input = ["results/metagenomic_classification/malt/malt.log"]
+output = ["results/maltextract/results/heatmap_overview_Wevid.pdf"]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+if [ ! -f "$ROOT/{input[0]}" ]; then
+  echo "[oxo-flow-eager] error: run_maltextract requires malt output — run_metagenomic_screening with metagenomic_tool=malt must be enabled (upstream fails the same way: no rma6 files to extract)." >&2
+  exit 1
+fi
+if [ -z "{config.maltextract_taxon_list}" ] || [ -z "{config.maltextract_ncbifiles}" ]; then
+  echo "[oxo-flow-eager] error: run_maltextract requires maltextract_taxon_list (taxon list file) and maltextract_ncbifiles (NCBI taxonomy files)." >&2
+  exit 1
+fi
+DESTACK=""; DOWNSAM=""; DUPREMO=""; MATCHES=""; MEGSUM=""; TOPALN=""; SS=""
+if [ "{config.maltextract_destackingoff}" = "true" ]; then DESTACK="--destackingOff"; fi
+if [ "{config.maltextract_downsamplingoff}" = "true" ]; then DOWNSAM="--downSampOff"; fi
+if [ "{config.maltextract_duplicateremovaloff}" = "true" ]; then DUPREMO="--dupRemOff"; fi
+if [ "{config.maltextract_matches}" = "true" ]; then MATCHES="--matches"; fi
+if [ "{config.maltextract_megansummary}" = "true" ]; then MEGSUM="--meganSummary"; fi
+if [ "{config.maltextract_topalignment}" = "true" ]; then TOPALN="--useTopAlignment"; fi
+if [ "{config.single_stranded}" = "true" ]; then SS="--singleStranded"; fi
+NCBI=""
+for f in $(echo "{config.maltextract_ncbifiles}" | tr ',' ' '); do
+  NCBI="$NCBI $ROOT/$f"
+done
+mkdir -p results/maltextract
+cd results/maltextract
+MaltExtract -Xmx$(( {effective_memory_mb} / 1024 ))g -t "$ROOT/{config.maltextract_taxon_list}" -i $ROOT/results/metagenomic_classification/malt/*.rma6 -o results/ -r $NCBI -p {threads} -f {config.maltextract_filter} -a {config.maltextract_toppercent} --minPI {config.maltextract_percentidentity} $DESTACK $DOWNSAM $DUPREMO $MATCHES $MEGSUM $TOPALN $SS
+postprocessing.AMPS.r -r results/ -m {config.maltextract_filter} -t {threads} -n "$ROOT/{config.maltextract_taxon_list}" -j
+'''
+tags = ["metagenomic"]
+
+[rules.resources]
+threads = 4
+memory = "8G"
+time_limit = "4h"
