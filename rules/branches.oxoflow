@@ -276,7 +276,7 @@ input = [
     "results/mapping/bt2/{sample}.mapped.bam",
     "results/mapping/circularmapper/{sample}.mapped.bam",
 ]
-optional = true
+optional = "any"
 depends_on = ["bwa_aln", "bwamem", "bowtie2", "circularmapper"]
 output = [
     "results/samtools/filter/{sample}.filtered.bam",
