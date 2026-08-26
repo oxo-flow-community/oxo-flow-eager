@@ -270,7 +270,14 @@ time_limit = "24h"
 name = "samtools_filter"
 description = "samtools view MAPQ filter (upstream samtools_filter; discard + fastq bam_unmapped_type branches, minreadlength-0)"
 when = "config.run_bam_filtering"
-input = ["results/mapping/bwa/{sample}.mapped.bam"]
+input = [
+    "results/mapping/bwa/{sample}_PE.mapped.bam",
+    "results/mapping/bwa/{sample}.mapped.bam",
+    "results/mapping/bt2/{sample}.mapped.bam",
+    "results/mapping/circularmapper/{sample}.mapped.bam",
+]
+optional = true
+depends_on = ["bwa_aln", "bwamem", "bowtie2", "circularmapper"]
 output = [
     "results/samtools/filter/{sample}.filtered.bam",
     "results/samtools/filter/{sample}.filtered.bam.bai",
@@ -280,15 +287,22 @@ shell = '''
 set -euo pipefail
 ROOT=$PWD
 mkdir -p results/samtools/filter
+# The mapped BAM name depends on the mapper (live: the bwaaln default writes
+# {sample}_PE.mapped.bam while the rule was declared against the bwamem name).
+BAM=""
+for c in "results/mapping/bwa/{sample}_PE.mapped.bam" "results/mapping/bwa/{sample}.mapped.bam" "results/mapping/bt2/{sample}.mapped.bam" "results/mapping/circularmapper/{sample}.mapped.bam"; do
+    [ -f "$c" ] && BAM="$c" && break
+done
+[ -n "$BAM" ] || { echo "[oxo-flow-eager] error: no mapped BAM found for mapper '{config.mapper}'" >&2; exit 1; }
 case "{config.bam_unmapped_type}" in
   discard)
-    samtools view -h "$ROOT/{input[0]}" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools view -h "$ROOT/$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
     samtools index "results/samtools/filter/{sample}.filtered.bam"
     : > "results/samtools/filter/{sample}.unmapped.fastq.gz"
     ;;
   fastq)
-    samtools view -h "$ROOT/{input[0]}" -@ {threads} -f4 -b > "results/samtools/filter/{sample}.unmapped.bam"
-    samtools view -h "$ROOT/{input[0]}" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools view -h "$ROOT/$BAM" -@ {threads} -f4 -b > "results/samtools/filter/{sample}.unmapped.bam"
+    samtools view -h "$ROOT/$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
     samtools index "results/samtools/filter/{sample}.filtered.bam"
     samtools fastq -tN "results/samtools/filter/{sample}.unmapped.bam" | pigz -p $(( {threads} - 1 )) > "results/samtools/filter/{sample}.unmapped.fastq.gz"
     rm "results/samtools/filter/{sample}.unmapped.bam"
