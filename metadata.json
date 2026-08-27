@@ -29,7 +29,10 @@
     "make_seq_dict",
     "make_bwa_index",
     "fastqc",
+    "fastqc_lanemerged",
     "fastp",
+    "lanemerge",
+    "lanemerge_r2",
     "adapter_removal",
     "fastqc_after_clipping",
     "bwa_aln",
@@ -81,13 +84,12 @@
     "maltextract"
   ],
   "excluded": [
-    "lanemerge / lanemerge_hostremoval_fastq: structural — multi-lane merging groups N per-lane fastq pairs into one sample, but oxo-flow rule instances are driven by wildcard combinations (one fastq pair per sample row) and expand_inputs only fans several files INTO one cohort instance; there is no primitive that groups several files of one sample into a single per-sample instance. Pre-concatenate lanes or declare the merged pair before running",
-    "library_merge / additional_library_merge: structural — multi-library merging (same constraint as lanemerge); merge libraries before the run or declare each library as its own sample",
-    "seqtype_merge: structural — PE/SE mixed-input merge (main.nf line 1597) needs per-sample multi-file grouping; the port is pure-PE. Convert SE samples to PE or run SE-only samples separately",
+    "library_merge / additional_library_merge: structural — upstream merges the per-LIBRARY BAMs of a sample (samtools merge of the per-library dedup / bam_trim BAMs, main.nf 1967 / 2320). The port's directory-input model has ONE library per sample (library = sample, lane = 0) and one BAM per sample at every stage, so there are no multi-library BAMs to merge; declaring each library as its own sample (or pre-merging) remains the workaround. lanemerge-style input_groups cannot express this either: it groups FILES of a pattern, and the port has no per-library file dimension",
+    "seqtype_merge: structural — upstream merges the per-seqtype mapped BAMs of mixed PE/SE libraries into one BAM per library (samtools merge, main.nf 1597); the port is pure-PE (directory input, sample = text before _R1/_R2) with one mapped BAM per sample, so there are no mixed-PE/SE BAMs to merge. Convert SE samples to PE or run SE-only samples separately",
     "output_documentation: nf-core boilerplate docs process (markdown_to_html.py of static run docs); upstream runs it unconditionally, so porting it would change the default plan for zero analytical value",
     "get_software_versions: nf-core boilerplate versions process (scrapes $workflow/$nextflow native variables into a versions.yml, which has no oxo-flow equivalent)"
   ],
-  "rule_count": 54,
+  "rule_count": 57,
   "tools": [
     "fastqc",
     "adapterremoval",
@@ -113,11 +115,12 @@
   ],
   "description": "Ancient DNA (aDNA) analysis in one run: FastQC raw QC, optional fastp poly-G filtering (2-colour chemistry), AdapterRemoval adapter clipping and paired-end read merging, BWA aln mapping with ancient-DNA parameters, picard MarkDuplicates (or DeDup) deduplication, preseq library-complexity curves, DamageProfiler damage estimation, Qualimap BAM QC, optional pileupCaller genotyping with eigenstrat SNP coverage, optional metagenomic screening of the unmapped reads (bbduk entropy complexity filter, MALT or kraken2 classification with kraken_parse/kraken_merge tables, MaltExtract aDNA evaluation), and a final MultiQC report — every rule pinned to the nf-core/eager 2.5.3 tool versions in the upstream container (MALT 0.61 and HOPs 0.35 ship in the pinned nfcore/eager:2.5.3 image).",
   "installation": {
-    "engine": "oxo-flow >= 0.12.0",
+    "engine": "oxo-flow >= 0.12.0 (the gated multi-lane mode — run_lanemerge=true — additionally requires oxo-flow >= 0.16.0 with input_groups support, Traitome/oxo-flow#231; on older engines the gate is inert and the default single-pair path is unchanged)",
     "toolchain": "containers (Docker/Singularity) — pinned image nfcore/eager:2.5.3 for all rules (bundles the pinned conda env from envs/eager.yaml)",
     "requirements": [
       "reference genome FASTA, plain and uncompressed (.gz references are not supported — upstream's unzip_reference step is not ported); the workflow builds the .fai / .dict / BWA indices itself",
       "paired-end FASTQ pairs named <sample>_R1.fastq.gz / <sample>_R2.fastq.gz in a directory (directory input mode; sample = text before the _R1/_R2 suffix); single-end is not supported",
+      "optional — multi-lane input: name the pairs <sample>_L<lane>_R1.fastq.gz / _R2.fastq.gz (lane-tagged, as in upstream's TSV mode) and set run_lanemerge=true: the lanemerge rules concatenate the per-lane pairs of each sample into one merged pair (results/lanemerging/) that feeds AdapterRemoval and hostremoval_input_fastq; samples without lane-tagged files keep using the default-named pair. Requires oxo-flow >= 0.16.0 (input_groups, Traitome/oxo-flow#231)",
       "optional — pileupCaller genotyping (run_genotyping=true genotyping_tool='pileupcaller') requires pileupcaller_snpfile and pileupcaller_bedfile; the rule fails fast without them",
       "optional — metagenomic screening (run_metagenomic_screening=true, bam_unmapped_type='fastq') requires metagenomic_tool='kraken' with a kraken2_db (kraken2 database directory or .tar.gz bundle, unpacked by the kraken rule) or metagenomic_tool='malt' with a malt_db (MALT database directory); maltextract additionally requires maltextract_taxon_list and maltextract_ncbifiles. The chain is validate/dry-run-tested but not yet live-verified",
       "compute: up to 4 CPUs / 8 GB RAM per rule (bwa_aln: 4 threads / 8G; kraken: 4 threads / 8G — upstream's mc_huge label is 32 cpus / 256 GB, tune via CLI overrides; reference-index and MultiQC rules up to 8 GB; base default 1 CPU / 7 GB / 24 h)",

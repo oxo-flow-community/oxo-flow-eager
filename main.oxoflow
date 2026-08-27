@@ -7,6 +7,8 @@
 #
 # Ported default-parameters main path (directory input, paired-end):
 #   makeFastaIndex -> makeSeqDict -> makeBWAIndex -> FASTQC ->
+#   [LANEMERGE, off by default (run_lanemerge; raw-level per-lane
+#   merge via input_groups, Traitome/oxo-flow#231)] ->
 #   [fastp poly-G filter, off by default] -> AdapterRemoval ->
 #   FASTQC_AFTER_CLIPPING -> BWA aln -> SAMTOOLS_FLAGSTAT ->
 #   MarkDuplicates (default dedupper) / [DeDup] -> PRESEQ ->
@@ -33,6 +35,13 @@ fasta = "test/fixtures/reference/genome.fa"
 single_end = false
 seqtype = "PE"
 lane = 0
+# --- multi-lane input merging (gated; upstream auto-detects lanes from
+#     the TSV input mode, the port's directory model needs an explicit
+#     gate). When on, per-lane pairs named {sample}_L{lane}_R{1,2}.fastq.gz
+#     are merged into one pair per sample (results/lanemerging/) that feeds
+#     AdapterRemoval (and hostremoval_input_fastq); requires oxo-flow with
+#     input_groups support (>= 0.16.0, Traitome/oxo-flow#231). ---
+run_lanemerge = false
 udg_type = "none"
 colour_chemistry = 4
 out_dir = "results"
@@ -309,7 +318,7 @@ time_limit = "4h"
 [[rules]]
 name = "fastqc"
 description = "Raw sequencing QC with FastQC on the input FASTQs"
-when = "!config.skip_fastqc"
+when = "!config.skip_fastqc && !config.run_lanemerge"
 input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
 output = [
     "results/fastqc/input_fastq/zips/{sample}_R1_raw_fastqc.zip",
@@ -341,6 +350,51 @@ memory = "4G"
 time_limit = "4h"
 
 # ------------------------------------------------------------------
+# R4b  FASTQC_LANEMERGED — gated twin of fastqc for run_lanemerge:
+#      FastQC on the lanemerged pair instead of the raw pair. The two
+#      rules share one output set and their when-gates are mutually
+#      exclusive (same pattern as the per-mapper samtools_filter
+#      variants), so the released engine needs no optional-input
+#      semantics. The renames anchor on the _lanemerged_ basenames.
+#      Upstream fastqc runs per lane; the port runs it on the merged
+#      pair (identical reads, one report per R1/R2 instead of per lane).
+# ------------------------------------------------------------------
+[[rules]]
+name = "fastqc_lanemerged"
+description = "Raw sequencing QC with FastQC on the lanemerged FASTQs (gated twin of fastqc for run_lanemerge)"
+when = "config.run_lanemerge && !config.skip_fastqc"
+depends_on = ["lanemerge", "lanemerge_r2"]
+input = [
+    "results/lanemerging/{sample}_R1_lanemerged.fq.gz",
+    "results/lanemerging/{sample}_R2_lanemerged.fq.gz",
+]
+output = [
+    "results/fastqc/input_fastq/zips/{sample}_R1_raw_fastqc.zip",
+    "results/fastqc/input_fastq/zips/{sample}_R2_raw_fastqc.zip",
+    "results/fastqc/input_fastq/{sample}_R1_raw_fastqc.html",
+    "results/fastqc/input_fastq/{sample}_R2_raw_fastqc.html",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/fastqc/input_fastq
+cd results/fastqc/input_fastq
+fastqc -t {threads} -q -o . "$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz" "$ROOT/results/lanemerging/{sample}_R2_lanemerged.fq.gz"
+rename 's/^{sample}_R1_lanemerged_fastqc\.zip$/{sample}_R1_raw_fastqc.zip/' {sample}_R1_lanemerged_fastqc.zip
+rename 's/^{sample}_R1_lanemerged_fastqc\.html$/{sample}_R1_raw_fastqc.html/' {sample}_R1_lanemerged_fastqc.html
+rename 's/^{sample}_R2_lanemerged_fastqc\.zip$/{sample}_R2_raw_fastqc.zip/' {sample}_R2_lanemerged_fastqc.zip
+rename 's/^{sample}_R2_lanemerged_fastqc\.html$/{sample}_R2_raw_fastqc.html/' {sample}_R2_lanemerged_fastqc.html
+mkdir -p zips
+mv {sample}_R1_raw_fastqc.zip {sample}_R2_raw_fastqc.zip zips/
+'''
+tags = ["qc", "fastq"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
 # R5  FASTP  (mc_small: 2 cpu / 4G / 4h)
 #     Poly-G complexity filter; off by default, same as upstream
 #     (params.complexity_filter_poly_g). Verbatim flags. Upstream feeds
@@ -353,6 +407,7 @@ time_limit = "4h"
 name = "fastp"
 description = "Poly-G complexity filtering with fastp (off by default, same as upstream)"
 when = "config.complexity_filter_poly_g && config.colour_chemistry == 2"
+depends_on = ["lanemerge", "lanemerge_r2"]
 input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
 output = [
     "results/FastP/{sample}_R1.pG.fq.gz",
@@ -364,13 +419,92 @@ set -euo pipefail
 ROOT=$PWD
 mkdir -p results/FastP
 cd results/FastP
-fastp --in1 "$ROOT/{input[0]}" --in2 "$ROOT/{input[1]}" --out1 "{sample}_R1.pG.fq.gz" --out2 "{sample}_R2.pG.fq.gz" -A -g --poly_g_min_len "{config.complexity_filter_poly_g_min}" -Q -L -w {threads} --json "{sample}_L{config.lane}_polyg_fastp.json"
+# run_lanemerge switches the input to the lanemerged pair (upstream fastp
+# runs per lane pre-merge; the port filters the merged reads instead —
+# identical reads, one invocation). The merged pair only exists when the
+# gate is on, so the default path is unchanged.
+if [ -s "$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz" ]; then
+  IN1="$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz"
+  IN2="$ROOT/results/lanemerging/{sample}_R2_lanemerged.fq.gz"
+else
+  IN1="$ROOT/{input[0]}"
+  IN2="$ROOT/{input[1]}"
+fi
+fastp --in1 "$IN1" --in2 "$IN2" --out1 "{sample}_R1.pG.fq.gz" --out2 "{sample}_R2.pG.fq.gz" -A -g --poly_g_min_len "{config.complexity_filter_poly_g_min}" -Q -L -w {threads} --json "{sample}_L{config.lane}_polyg_fastp.json"
 '''
 tags = ["fastq", "preprocessing"]
 
 [rules.resources]
 threads = 2
 memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# R5b  LANEMERGE / LANEMERGE_R2  (sc_tiny: 1 cpu / 1G / 4h)
+#      Per-lane FASTQ merge, gated by run_lanemerge (default false).
+#      Upstream eager groups N per-lane fastq pairs of one sample
+#      (groupTuple by sample/library) and cats them into one pair per
+#      sample — post-AdapterRemoval for the mapping path (main.nf
+#      1125-1196) and on RAW reads for the hostremoval path
+#      (lanemerge_hostremoval_fastq, main.nf 1197-1225). The port's
+#      AdapterRemoval is per-sample, so the expressible faithful
+#      equivalent merges the RAW per-lane pairs first (the same raw
+#      merge upstream performs for host removal, and upstream's own
+#      recommended pre-concatenation); the merged pair then feeds
+#      AdapterRemoval (and hostremoval_input_fastq). Multi-lane naming
+#      convention: raw/{sample}_L{lane}_R{1,2}.fastq.gz (the lane-tagged
+#      style of upstream's TSV input mode). The engine allows at most
+#      ONE input_groups entry per rule, so R1 and R2 are two rules;
+#      {input} renders the lane-sorted files of the group, {lane} binds
+#      the first sorted file's value (keep), and a group key with zero
+#      files instantiates nothing — samples whose files are not
+#      lane-tagged simply have no instance and the consumers fall back
+#      to the default-path pair. Merged names mirror upstream's
+#      {libraryid}_R{1,2}_lanemerged.fq.gz under results/lanemerging/.
+# ------------------------------------------------------------------
+[[rules]]
+name = "lanemerge"
+description = "Concatenate a sample's per-lane R1 FASTQs into one merged R1 (upstream lanemerge, raw level; gated by run_lanemerge)"
+when = "config.run_lanemerge"
+input_groups = [
+    { pattern = "test/fixtures/raw/{sample}_L{lane}_R1.fastq.gz", group_by = "sample", keep = "lane" }
+]
+output = ["results/lanemerging/{sample}_R1_lanemerged.fq.gz"]
+shell = '''
+set -euo pipefail
+# Fail fast on engines without input_groups support (Traitome/oxo-flow#231):
+# {input} renders empty there and a bare cat would silently create an
+# empty merged file.
+[ -n "{input}" ] || { echo "[oxo-flow-eager] error: lanemerge's input_groups resolved to no files ({input}) — run_lanemerge needs oxo-flow >= 0.16.0 with input_groups support (Traitome/oxo-flow#231) and lane-tagged inputs {sample}_L{lane}_R1.fastq.gz." >&2; exit 1; }
+mkdir -p results/lanemerging
+cat {input} > {output}
+'''
+tags = ["preprocessing", "merge"]
+
+[rules.resources]
+threads = 1
+memory = "1G"
+time_limit = "4h"
+
+[[rules]]
+name = "lanemerge_r2"
+description = "Concatenate a sample's per-lane R2 FASTQs into one merged R2 (upstream lanemerge, raw level; gated by run_lanemerge)"
+when = "config.run_lanemerge"
+input_groups = [
+    { pattern = "test/fixtures/raw/{sample}_L{lane}_R2.fastq.gz", group_by = "sample", keep = "lane" }
+]
+output = ["results/lanemerging/{sample}_R2_lanemerged.fq.gz"]
+shell = '''
+set -euo pipefail
+[ -n "{input}" ] || { echo "[oxo-flow-eager] error: lanemerge_r2's input_groups resolved to no files ({input}) — run_lanemerge needs oxo-flow >= 0.16.0 with input_groups support (Traitome/oxo-flow#231) and lane-tagged inputs {sample}_L{lane}_R2.fastq.gz." >&2; exit 1; }
+mkdir -p results/lanemerging
+cat {input} > {output}
+'''
+tags = ["preprocessing", "merge"]
+
+[rules.resources]
+threads = 1
+memory = "1G"
 time_limit = "4h"
 
 # ------------------------------------------------------------------
@@ -388,7 +522,7 @@ time_limit = "4h"
 name = "adapter_removal"
 description = "Adapter clipping and paired-end read merging with AdapterRemoval + AdapterRemovalFixPrefix (PE collapse branch)"
 when = "!config.skip_adapterremoval"
-depends_on = ["fastp"]
+depends_on = ["fastp", "lanemerge", "lanemerge_r2"]
 input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
 output = [
     "results/adapterremoval/output/{sample}_R1_L{config.lane}.pe.combined.fq.gz",
@@ -397,9 +531,16 @@ output = [
 shell = '''
 set -euo pipefail
 ROOT=$PWD
+# Input precedence, mirroring upstream's channel mix: fastp-filtered reads
+# (when the poly-G gate is on) > lanemerged pair (when run_lanemerge is on)
+# > the default-path raw pair. Each branch only fires when its files exist,
+# so the default path is unchanged.
 if [ -s "$ROOT/results/FastP/{sample}_R1.pG.fq.gz" ]; then
   R1="$ROOT/results/FastP/{sample}_R1.pG.fq.gz"
   R2="$ROOT/results/FastP/{sample}_R2.pG.fq.gz"
+elif [ -s "$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz" ]; then
+  R1="$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz"
+  R2="$ROOT/results/lanemerging/{sample}_R2_lanemerged.fq.gz"
 else
   R1="$ROOT/{input[0]}"
   R2="$ROOT/{input[1]}"
@@ -779,7 +920,10 @@ depends_on = [
     "make_seq_dict",
     "make_bwa_index",
     "fastqc",
+    "fastqc_lanemerged",
     "fastp",
+    "lanemerge",
+    "lanemerge_r2",
     "adapter_removal",
     "fastqc_after_clipping",
     "bwa_aln",

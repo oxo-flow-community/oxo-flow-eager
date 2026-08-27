@@ -28,19 +28,22 @@ name = "branches"
 #   "no conda package" exclusion reason does not apply to this port —
 #   the nfcore/eager:2.5.3 container carries both.
 #
+# lanemerge / lanemerge_hostremoval_fastq are ported in main.oxoflow as
+# the gated raw-level lane merge (run_lanemerge, input_groups #231):
+# the merged pair feeds adapter_removal AND this file's
+# hostremoval_input_fastq (which switches to it via an existence check,
+# mirroring upstream's ch_fastqlanemerge_for_hostremovalfastq).
+#
 # NOT ported (structural, with reasons):
-#   - lanemerge / lanemerge_hostremoval_fastq / library_merge /
-#     additional_library_merge / seqtype_merge: Nextflow multi-file
-#     channel merges. Upstream groups N lane/library files per sample
-#     (groupTuple by samplename/libraryid) and cats/samtools-merges them
-#     into one file; oxo-flow instances are driven by wildcard
-#     combinations — a rule referencing {sample} fans out one instance
-#     per sample with ONE file per input pattern, expand_inputs fans
-#     INTO a single cohort instance, and [[values]] fans out per
-#     combination. There is no primitive that groups N files of one
-#     sample into one instance's input, so multi-lane/multi-library
-#     inputs are expressed as separate sample rows instead (or
-#     pre-concatenated — upstream's own recommendation).
+#   - library_merge / additional_library_merge / seqtype_merge:
+#     sample-level BAM merges. Upstream merges the per-LIBRARY BAMs of a
+#     sample (samtools merge of the per-library dedup / bam_trim BAMs,
+#     main.nf 1967 / 2320; seqtype_merge merges the per-seqtype mapped
+#     BAMs of mixed PE/SE libraries, main.nf 1597). The port's
+#     directory-input model has ONE library per sample (library = sample,
+#     lane = 0) and one BAM per sample at every stage, pure-PE — there
+#     are no per-library or per-seqtype BAMs to merge. Declare each
+#     library as its own sample or pre-merge, as before.
 #   - output_documentation / get_software_versions: nf-core template
 #     boilerplate. output_documentation renders upstream docs/output.md
 #     to HTML (unconditional upstream — porting it would change the
@@ -240,12 +243,25 @@ time_limit = "4h"
 name = "hostremoval_input_fastq"
 description = "Extract host-mapped reads to FASTQ via extract_map_reads.py (upstream hostremoval_input_fastq)"
 when = "config.hostremoval_input_fastq"
+depends_on = ["lanemerge", "lanemerge_r2"]
 input = ["results/mapping/bwa/{sample}.mapped.bam"]
 output = ["results/hostremoved_fastq/{sample}.mapped.hostremoved.fwd.fq.gz", "results/hostremoved_fastq/{sample}.mapped.hostremoved.rev.fq.gz"]
 shell = '''
 set -euo pipefail
+ROOT=$PWD
 mkdir -p results/hostremoved_fastq
-extract_map_reads.py "{input[0]}" "test/fixtures/raw/{sample}_R1.fastq.gz" -rev "test/fixtures/raw/{sample}_R2.fastq.gz" -m {config.hostremoval_mode} -of "results/hostremoved_fastq/{sample}.mapped.hostremoved.fwd.fq.gz" -or "results/hostremoved_fastq/{sample}.mapped.hostremoved.rev.fq.gz" -t {threads}
+# Upstream feeds the LANEMERGED raw reads into extract_map_reads.py
+# (ch_fastqlanemerge_for_hostremovalfastq, main.nf 1197-1225 + 1489);
+# with run_lanemerge on, prefer the merged pair, else the default-path
+# pair (existence check — the default path is unchanged).
+if [ -s "$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz" ]; then
+  FQ1="$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz"
+  FQ2="$ROOT/results/lanemerging/{sample}_R2_lanemerged.fq.gz"
+else
+  FQ1="$ROOT/test/fixtures/raw/{sample}_R1.fastq.gz"
+  FQ2="$ROOT/test/fixtures/raw/{sample}_R2.fastq.gz"
+fi
+extract_map_reads.py "{input[0]}" "$FQ1" -rev "$FQ2" -m {config.hostremoval_mode} -of "results/hostremoved_fastq/{sample}.mapped.hostremoved.fwd.fq.gz" -or "results/hostremoved_fastq/{sample}.mapped.hostremoved.rev.fq.gz" -t {threads}
 '''
 tags = ["fastq", "preprocessing"]
 
