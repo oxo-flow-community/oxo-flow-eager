@@ -266,18 +266,20 @@ time_limit = "24h"
 #      consumed — the metagenomic rules are gated on
 #      bam_unmapped_type == 'fastq' like upstream.
 # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# B10  SAMTOOLS_FILTER — one variant per mapper (upstream's if/else
+#      matrix). The mapper's BAM naming differs (bwaaln writes
+#      {sample}_PE.mapped.bam, the others {sample}.mapped.bam), and a
+#      single rule with four optional inputs cannot express "run on the
+#      ONE that exists" on the released engine (optional="any" needs
+#      Traitome/oxo-flow#200). Exclusive mapper when-gates make exactly
+#      one variant fire, so the shared outputs have a single producer.
+# ------------------------------------------------------------------
 [[rules]]
-name = "samtools_filter"
-description = "samtools view MAPQ filter (upstream samtools_filter; discard + fastq bam_unmapped_type branches, minreadlength-0)"
-when = "config.run_bam_filtering"
-input = [
-    "results/mapping/bwa/{sample}_PE.mapped.bam",
-    "results/mapping/bwa/{sample}.mapped.bam",
-    "results/mapping/bt2/{sample}.mapped.bam",
-    "results/mapping/circularmapper/{sample}.mapped.bam",
-]
-optional = true
-depends_on = ["bwa_aln", "bwamem", "bowtie2", "circularmapper"]
+name = "samtools_filter_bwaaln"
+description = "samtools view MAPQ filter, bwaaln BAM (upstream samtools_filter; discard + fastq bam_unmapped_type branches, minreadlength-0)"
+when = "config.run_bam_filtering && config.mapper == 'bwaaln'"
+input = ["results/mapping/bwa/{sample}_PE.mapped.bam"]
 output = [
     "results/samtools/filter/{sample}.filtered.bam",
     "results/samtools/filter/{sample}.filtered.bam.bai",
@@ -285,24 +287,137 @@ output = [
 ]
 shell = '''
 set -euo pipefail
-ROOT=$PWD
 mkdir -p results/samtools/filter
-# The mapped BAM name depends on the mapper (live: the bwaaln default writes
-# {sample}_PE.mapped.bam while the rule was declared against the bwamem name).
-BAM=""
-for c in "results/mapping/bwa/{sample}_PE.mapped.bam" "results/mapping/bwa/{sample}.mapped.bam" "results/mapping/bt2/{sample}.mapped.bam" "results/mapping/circularmapper/{sample}.mapped.bam"; do
-    [ -f "$c" ] && BAM="$c" && break
-done
-[ -n "$BAM" ] || { echo "[oxo-flow-eager] error: no mapped BAM found for mapper '{config.mapper}'" >&2; exit 1; }
+BAM="{input[0]}"
 case "{config.bam_unmapped_type}" in
   discard)
-    samtools view -h "$ROOT/$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools view -h "$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
     samtools index "results/samtools/filter/{sample}.filtered.bam"
     : > "results/samtools/filter/{sample}.unmapped.fastq.gz"
     ;;
   fastq)
-    samtools view -h "$ROOT/$BAM" -@ {threads} -f4 -b > "results/samtools/filter/{sample}.unmapped.bam"
-    samtools view -h "$ROOT/$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools view -h "$BAM" -@ {threads} -f4 -b > "results/samtools/filter/{sample}.unmapped.bam"
+    samtools view -h "$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools index "results/samtools/filter/{sample}.filtered.bam"
+    samtools fastq -tN "results/samtools/filter/{sample}.unmapped.bam" | pigz -p $(( {threads} - 1 )) > "results/samtools/filter/{sample}.unmapped.fastq.gz"
+    rm "results/samtools/filter/{sample}.unmapped.bam"
+    ;;
+  *)
+    echo "[oxo-flow-eager] error: unsupported bam_unmapped_type '{config.bam_unmapped_type}' (supported here: discard, fastq; upstream 'bam'/'both' branches are not ported)" >&2
+    exit 1
+    ;;
+esac
+'''
+tags = ["bam", "filtering"]
+
+[rules.resources]
+threads = 4
+memory = "4G"
+time_limit = "24h"
+
+[[rules]]
+name = "samtools_filter_bwamem"
+description = "samtools view MAPQ filter, bwamem BAM (upstream samtools_filter; discard + fastq bam_unmapped_type branches, minreadlength-0)"
+when = "config.run_bam_filtering && config.mapper == 'bwamem'"
+input = ["results/mapping/bwa/{sample}.mapped.bam"]
+output = [
+    "results/samtools/filter/{sample}.filtered.bam",
+    "results/samtools/filter/{sample}.filtered.bam.bai",
+    "results/samtools/filter/{sample}.unmapped.fastq.gz",
+]
+shell = '''
+set -euo pipefail
+mkdir -p results/samtools/filter
+BAM="{input[0]}"
+case "{config.bam_unmapped_type}" in
+  discard)
+    samtools view -h "$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools index "results/samtools/filter/{sample}.filtered.bam"
+    : > "results/samtools/filter/{sample}.unmapped.fastq.gz"
+    ;;
+  fastq)
+    samtools view -h "$BAM" -@ {threads} -f4 -b > "results/samtools/filter/{sample}.unmapped.bam"
+    samtools view -h "$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools index "results/samtools/filter/{sample}.filtered.bam"
+    samtools fastq -tN "results/samtools/filter/{sample}.unmapped.bam" | pigz -p $(( {threads} - 1 )) > "results/samtools/filter/{sample}.unmapped.fastq.gz"
+    rm "results/samtools/filter/{sample}.unmapped.bam"
+    ;;
+  *)
+    echo "[oxo-flow-eager] error: unsupported bam_unmapped_type '{config.bam_unmapped_type}' (supported here: discard, fastq; upstream 'bam'/'both' branches are not ported)" >&2
+    exit 1
+    ;;
+esac
+'''
+tags = ["bam", "filtering"]
+
+[rules.resources]
+threads = 4
+memory = "4G"
+time_limit = "24h"
+
+[[rules]]
+name = "samtools_filter_bowtie2"
+description = "samtools view MAPQ filter, bowtie2 BAM (upstream samtools_filter; discard + fastq bam_unmapped_type branches, minreadlength-0)"
+when = "config.run_bam_filtering && config.mapper == 'bowtie2'"
+input = ["results/mapping/bt2/{sample}.mapped.bam"]
+output = [
+    "results/samtools/filter/{sample}.filtered.bam",
+    "results/samtools/filter/{sample}.filtered.bam.bai",
+    "results/samtools/filter/{sample}.unmapped.fastq.gz",
+]
+shell = '''
+set -euo pipefail
+mkdir -p results/samtools/filter
+BAM="{input[0]}"
+case "{config.bam_unmapped_type}" in
+  discard)
+    samtools view -h "$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools index "results/samtools/filter/{sample}.filtered.bam"
+    : > "results/samtools/filter/{sample}.unmapped.fastq.gz"
+    ;;
+  fastq)
+    samtools view -h "$BAM" -@ {threads} -f4 -b > "results/samtools/filter/{sample}.unmapped.bam"
+    samtools view -h "$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools index "results/samtools/filter/{sample}.filtered.bam"
+    samtools fastq -tN "results/samtools/filter/{sample}.unmapped.bam" | pigz -p $(( {threads} - 1 )) > "results/samtools/filter/{sample}.unmapped.fastq.gz"
+    rm "results/samtools/filter/{sample}.unmapped.bam"
+    ;;
+  *)
+    echo "[oxo-flow-eager] error: unsupported bam_unmapped_type '{config.bam_unmapped_type}' (supported here: discard, fastq; upstream 'bam'/'both' branches are not ported)" >&2
+    exit 1
+    ;;
+esac
+'''
+tags = ["bam", "filtering"]
+
+[rules.resources]
+threads = 4
+memory = "4G"
+time_limit = "24h"
+
+[[rules]]
+name = "samtools_filter_circularmapper"
+description = "samtools view MAPQ filter, circularmapper BAM (upstream samtools_filter; discard + fastq bam_unmapped_type branches, minreadlength-0)"
+when = "config.run_bam_filtering && config.mapper == 'circularmapper'"
+input = ["results/mapping/circularmapper/{sample}.mapped.bam"]
+output = [
+    "results/samtools/filter/{sample}.filtered.bam",
+    "results/samtools/filter/{sample}.filtered.bam.bai",
+    "results/samtools/filter/{sample}.unmapped.fastq.gz",
+]
+shell = '''
+set -euo pipefail
+mkdir -p results/samtools/filter
+BAM="{input[0]}"
+case "{config.bam_unmapped_type}" in
+  discard)
+    samtools view -h "$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
+    samtools index "results/samtools/filter/{sample}.filtered.bam"
+    : > "results/samtools/filter/{sample}.unmapped.fastq.gz"
+    ;;
+  fastq)
+    samtools view -h "$BAM" -@ {threads} -f4 -b > "results/samtools/filter/{sample}.unmapped.bam"
+    samtools view -h "$BAM" -@ {threads} -F4 -q {config.bam_mapping_quality_threshold} -b > "results/samtools/filter/{sample}.filtered.bam"
     samtools index "results/samtools/filter/{sample}.filtered.bam"
     samtools fastq -tN "results/samtools/filter/{sample}.unmapped.bam" | pigz -p $(( {threads} - 1 )) > "results/samtools/filter/{sample}.unmapped.fastq.gz"
     rm "results/samtools/filter/{sample}.unmapped.bam"
@@ -879,7 +994,7 @@ time_limit = "4h"
 name = "kraken"
 description = "kraken2 classification (upstream kraken, mc_huge)"
 when = "config.run_metagenomic_screening && config.run_bam_filtering && config.bam_unmapped_type == 'fastq' && config.metagenomic_tool == 'kraken'"
-depends_on = ["samtools_filter", "metagenomic_complexity_filter"]
+depends_on = ["samtools_filter_bwaaln", "samtools_filter_bwamem", "samtools_filter_bowtie2", "samtools_filter_circularmapper", "metagenomic_complexity_filter"]
 input = ["results/samtools/filter/{sample}.unmapped.fastq.gz"]
 output = [
     "results/metagenomic_classification/kraken/{sample}.unmapped.fastq.kraken.out",
@@ -979,7 +1094,7 @@ time_limit = "4h"
 name = "malt"
 description = "MALT alignment of all unmapped reads against a MALT database (upstream malt, mc_small)"
 when = "config.run_metagenomic_screening && config.run_bam_filtering && config.bam_unmapped_type == 'fastq' && config.metagenomic_tool == 'malt'"
-depends_on = ["samtools_filter", "metagenomic_complexity_filter"]
+depends_on = ["samtools_filter_bwaaln", "samtools_filter_bwamem", "samtools_filter_bowtie2", "samtools_filter_circularmapper", "metagenomic_complexity_filter"]
 input = []
 expand_inputs = [
     { pattern = "results/samtools/filter/{sample}.unmapped.fastq.gz", variables = { sample = "config.samples_list" } }
