@@ -130,8 +130,9 @@ MALT install (no conda package)" exclusion reason was wrong — the upstream
 `environment.yml` pins `bioconda::malt=0.61` and `bioconda::hops=0.35`, so
 MALT and MaltExtract ship inside the pinned `nfcore/eager:2.5.3` container).
 The remaining `not ported` rows are structural (multi-lane/library channel
-merges — oxo-flow has no per-sample multi-file grouping primitive) or
-nf-core boilerplate (`output_documentation`, `get_software_versions`).
+merges — oxo-flow has no per-sample multi-file grouping primitive), the
+unported BAM pass-through mode (`indexinputbam`), or nf-core boilerplate
+(`output_documentation`, `get_software_versions`).
 
 | Upstream process | oxo-flow rule | Tool (version) | Notes |
 |---|---|---|---|
@@ -150,7 +151,7 @@ nf-core boilerplate (`output_documentation`, `get_software_versions`).
 | circulargenerator | `circulargenerator` | circularmapper 1.93.5, bwa | `circulargenerator -e -i -s` + `bwa index` on the elongated fasta; `when = config.mapper == 'circularmapper'` |
 | circularmapper | `circularmapper` | bwa + circularmapper 1.93.5 | `bwa aln` on the elongated reference + `realignsamfile` + sort/index; `when = config.mapper == 'circularmapper'` |
 | convertBam | `convert_bam` | samtools 1.12, pigz | `samtools bam2fq | pigz`; `when = config.bam_input` (default false — the fixture is FASTQ) |
-| indexinputbam | `indexinputbam` | samtools 1.12 | `samtools index` of the BAM input; `when = config.bam_input` |
+| indexinputbam | — | samtools 1.12 | not ported — indexes the input BAM for upstream's BAM pass-through mode (`bam != 'NA' && !run_convertinputbam`, main.nf 657); the port's BAM-input mode routes through `convert_bam` (bam2fq) instead and nothing downstream consumes the input BAM directly, so no index is needed |
 | hostremoval_input_fastq | `hostremoval_input_fastq` | extract_map_reads.py (bundled) | PE branch verbatim (`-m`, `-of`/`-or`, `-t`); `when = config.hostremoval_input_fastq` |
 | samtools_flagstat | `samtools_flagstat` | samtools 1.12 | Verbatim: `samtools flagstat > {libraryid}_flagstat.stats` |
 | samtools_filter | `samtools_filter_{bwaaln,bwamem,bowtie2,circularmapper}` | samtools 1.12, pigz 2.6 | Four per-mapper rules sharing ONE output set; each is gated `when = config.run_bam_filtering && config.mapper == '<mapper>'` (mutually exclusive, so the released engine needs no any-mode semantics) and takes its mapper's mapped BAM as `BAM="{input[0]}"` (`results/mapping/bwa/{sample}_PE.mapped.bam` / `results/mapping/bwa/{sample}.mapped.bam` / `results/mapping/bt2/{sample}.mapped.bam` / `results/mapping/circularmapper/{sample}.mapped.bam`). The shared body carries the minreadlength-0 branches selected by `bam_unmapped_type`: `discard` (`-F4 -q <thr>`, default) and `fastq` (upstream `-f4` / `-F4 -q` + `samtools fastq -tN \| pigz -p <cpus-1>` + `rm`, the metagenomic-chain producer), both verbatim. The discard branch additionally writes an EMPTY `{sample}.unmapped.fastq.gz` placeholder — the engine requires every declared output to exist, and it is never consumed (the metagenomic rules are gated on `bam_unmapped_type == 'fastq'`). The `keep`/`bam`/`both` branches fail fast with a clear error; bwaaln variant live-verified on tx-ubuntu 2026-08-27 (run_bam_filtering=true, 15 succeeded / 0 failed) |
@@ -256,7 +257,10 @@ Additional deviations from upstream (all on the default path):
   `run_multivcfanalyzer`, `run_sexdeterrmine`, `run_mtnucratio`,
   `run_nuclear_contamination`, `run_endorSpy`, `run_convertinputbam`,
   `run_hostremoval` and the non-default mapper/dedupper/damage-tool/
-  genotyping-tool choices are all listed above as `not ported` branches;
+  genotyping-tool choices are all ported as the gated branch rules above
+  (the port's keys are `run_endor_spy`, `bam_input` and
+  `hostremoval_input_fastq` where the upstream names `run_endorSpy`,
+  `run_convertinputbam` and `hostremoval_input_fastq` differ);
   `run_bam_filtering` (incl. the metagenomic screening chain under
   `run_metagenomic_screening` with `metagenomic_tool` = `kraken`/`malt`) IS
   ported. Default values are kept in `[config]` where a config key exists.
