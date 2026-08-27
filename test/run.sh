@@ -15,6 +15,10 @@ echo "==> dry-run with default config"
 "$OXO" dry-run main.oxoflow --samples first:1 > /tmp/oxo-dryrun-$$.txt 2>&1
 grep -q "would execute" /tmp/oxo-dryrun-$$.txt
 
+echo "==> dry-run with run_lanemerge=true (gated multi-lane mode)"
+"$OXO" dry-run main.oxoflow --samples first:1 run_lanemerge=true > /tmp/oxo-dryrun-gated-$$.txt 2>&1
+grep -q "lanemerge" /tmp/oxo-dryrun-gated-$$.txt
+
 echo "==> debug: expanded commands contain no literal {wildcards}"
 "$OXO" debug main.oxoflow | grep -q '{sample}' && { echo "unexpanded wildcards in debug output"; exit 1; } || true
 

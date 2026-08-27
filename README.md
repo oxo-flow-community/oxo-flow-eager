@@ -50,6 +50,15 @@ Derived from `main.oxoflow`:
   suffix). Point the workflow at your own directory via the rule inputs.
   Only paired-end reads are supported (the PE/SE-mixed merge branch of the
   upstream is not ported); set `single_end = false` (the default).
+- **Optional — multi-lane input** (`run_lanemerge=true`): name the pairs
+  `test/fixtures/raw/<sample>_L<lane>_R1.fastq.gz` / `_R2.fastq.gz` (the
+  lane-tagged style of upstream's TSV input mode). The `lanemerge` /
+  `lanemerge_r2` rules concatenate each sample's per-lane pairs into one
+  merged pair (`results/lanemerging/`) that feeds AdapterRemoval (and
+  `hostremoval_input_fastq`); samples whose files are not lane-tagged keep
+  using the default-named pair. Requires **oxo-flow >= 0.16.0** with
+  `input_groups` support (Traitome/oxo-flow#231); on older engines the gate
+  is inert and the default single-pair path is unchanged.
 - **Reference genome** — a **plain, uncompressed FASTA** via `fasta=...`
   (default: the bundled fixture `test/fixtures/reference/genome.fa`). The
   workflow builds the `.fai` index, the picard sequence dictionary and the
@@ -102,6 +111,9 @@ Key config knobs (all upstream defaults; `KEY=VALUE` overrides work):
 - `fasta=...` — reference genome FASTA (default: bundled fixture)
 - `clip_forward_adaptor` / `clip_reverse_adaptor` — adapter sequences
 - `bwaalnn/bwaalnk/bwaalnl/bwaalno` — BWA aln parameters (Oliva et al. 2021)
+- `run_lanemerge=true` — multi-lane input mode: merge each sample's
+  `_L<lane>_`-tagged pairs before clipping (see Requirements; needs
+  oxo-flow >= 0.16.0 with `input_groups` support)
 
 ## Source
 
@@ -129,9 +141,12 @@ kraken_merge, malt, maltextract; note the old "needs the upstream's bundled
 MALT install (no conda package)" exclusion reason was wrong — the upstream
 `environment.yml` pins `bioconda::malt=0.61` and `bioconda::hops=0.35`, so
 MALT and MaltExtract ship inside the pinned `nfcore/eager:2.5.3` container).
-The remaining `not ported` rows are structural (multi-lane/library channel
-merges — oxo-flow has no per-sample multi-file grouping primitive), the
-unported BAM pass-through mode (`indexinputbam`), or nf-core boilerplate
+The multi-lane raw-level merges (`lanemerge`, `lanemerge_hostremoval_fastq`)
+are ported as a gated mode (`run_lanemerge`, off by default) built on the
+`input_groups` engine primitive (Traitome/oxo-flow#231, oxo-flow >= 0.16.0) —
+see the rows below. The remaining `not ported` rows are the BAM-level
+library/seqtype channel merges (the port's model has one library per sample),
+the unported BAM pass-through mode (`indexinputbam`), or nf-core boilerplate
 (`output_documentation`, `get_software_versions`).
 
 | Upstream process | oxo-flow rule | Tool (version) | Notes |
@@ -168,11 +183,11 @@ unported BAM pass-through mode (`indexinputbam`), or nf-core boilerplate
 | pmdtools | `pmdtools` | pmdtools 0.60, samtools | verbatim calmd|pmdtools filter + range chain incl. the 141 trap; `when = config.run_pmdtools` |
 | bam_trim | `bam_trim` | bamutil 1.0.15, samtools | `bam trimBam -L -R` (double-stranded none-UDG clip values) + sort/index; `when = config.run_trim_bam` |
 | post_ar_fastq_trimming | `post_ar_fastq_trimming` | fastp 0.20.1 | PE branch verbatim (`--trim_front1/2 --trim_tail1/2`); `when = config.run_post_ar_trimming` |
-| lanemerge | — | — | not ported — structural: multi-lane merging groups N per-lane fastq pairs into one sample; oxo-flow rule instances are driven by wildcard combinations (one fastq pair per sample row), and `expand_inputs` only fans several files INTO one cohort instance — there is no primitive that groups several files of one sample into a single per-sample instance. Pre-concatenate the lanes (or declare the merged pair) before running |
-| lanemerge_hostremoval_fastq | — | — | not ported — structural: multi-lane + host removal combination (same constraint as lanemerge) |
-| library_merge | — | — | not ported — structural: multi-library merging (same constraint as lanemerge — one fastq pair per sample row); merge libraries before the run or declare each library as its own sample |
-| additional_library_merge | — | — | not ported — structural: multi-library merging (same constraint) |
-| seqtype_merge | — | samtools 1.12 | not ported — structural: PE/SE mixed-input merge (main.nf line 1597) needs per-sample multi-file grouping; the port is pure-PE. Convert SE samples to PE or run SE-only samples separately |
+| lanemerge | `lanemerge` + `lanemerge_r2` | cat (pigz 2.6) | ported as a gated mode (`run_lanemerge=true`, off by default): the two rules group each sample's lane-tagged pairs (`{sample}_L{lane}_R{1,2}.fastq.gz`) via `input_groups` (group_by = sample, keep = lane; Traitome/oxo-flow#231, oxo-flow >= 0.16.0) and `cat` the pair into one merged fastq (`results/lanemerging/{sample}_R{1,2}_lanemerged.fq.gz`) consumed by fastp / adapter_removal / hostremoval_input_fastq. Deviations: upstream merges the per-library collapsed fastqs AFTER AdapterRemoval (main.nf 1125) and only merges R2 when `single_end=false`; the port merges the raw per-lane pairs pre-clipping (the raw-level `lanemerge_hostremoval_fastq` semantics) and always merges R2 (the port is pure-PE). Samples without lane-tagged files are untouched; with the gate off (or on a released engine without `input_groups`) the default single-pair path is byte-identical, and a fail-fast `{input}` guard prevents silently empty merges. Merged-content E2E passed locally 2026-08-27 (byte-identical to the single-pair inputs); full container run queued for tx-ubuntu |
+| lanemerge_hostremoval_fastq | `hostremoval_input_fastq` (shell switch) | extract_map_reads.py (bundled) | ported as part of the gated mode: when `run_lanemerge=true` the rule feeds the merged pair from `results/lanemerging/` instead of the raw one — upstream's raw-level merge-into-hostremoval semantics (main.nf 1197). Without lane-tagged files the raw pair is used, exactly as before |
+| library_merge | — | samtools 1.12 | not ported — structural: upstream merges the per-LIBRARY dedup BAMs of a sample (`samtools merge`, main.nf 1967); the port's directory-input model has ONE library per sample (library = sample, lane = 0) and one BAM per sample at every stage, so there are no multi-library BAMs to merge. `input_groups` cannot express it either — it groups FILES of a pattern, and the port has no per-library file dimension. Declare each library as its own sample (or pre-merge) before running |
+| additional_library_merge | — | samtools 1.12 | not ported — structural: same constraint as `library_merge` (merges the per-library bam_trim BAMs, main.nf 2320); the port has one BAM per sample per stage |
+| seqtype_merge | — | samtools 1.12 | not ported — structural: upstream merges the per-seqtype mapped BAMs of mixed PE/SE libraries into one BAM per library (`samtools merge`, main.nf 1597); the port is pure-PE (sample = text before `_R1`/`_R2`) with one mapped BAM per sample, so there are no mixed-PE/SE BAMs to merge. Convert SE samples to PE or run SE-only samples separately |
 | qualimap | `qualimap` | qualimap 2.2.2d | Default path, ported: `qualimap bamqc -bam <rmdup bam> -nt 2 -outdir . -outformat "HTML" --java-mem-size=4G` verbatim; output lands in `results/qualimap/<bam-base>_bamqc/` as upstream |
 | genotyping_pileupcaller | `genotyping_pileupcaller` | samtools 1.12, sequencetools 1.5.2 | Off by default, same as upstream (`run_genotyping=false`). Verbatim: `samtools mpileup -B --ignore-RG -q 30 -Q 30 [-l <bed>] -f <fasta> <bams> \| pileupCaller --randomHaploid --sampleNames <csv> [-f <snp>] -e pileupcaller.double` (single-instance fan-in; `-e` prefix `pileupcaller.double` = PE strandedness). `-l`/`-f` render only when `pileupcaller_bedfile`/`pileupcaller_snpfile` are set, exactly as upstream's dummy-file check (main.nf lines 2608-2609); without them the rule fails fast with upstream's error message — upstream exits 1 at workflow start (main.nf lines 74-78), the port's guard lives in the rule shell because oxo-flow has no params-validation stage |
 | genotyping_ug | `genotyping_ug` | gatk3 3.5, bgzip | verbatim RealignerTargetCreator → IndelRealigner → UnifiedGenotyper → bgzip; `when = run_genotyping && genotyping_tool == 'ug'` |
@@ -215,6 +230,29 @@ Additional deviations from upstream (all on the default path):
   used by the undefined `mc_tiny` label (eigenstrat_snp_coverage).
   JVM heaps are byte-identical (`-Xmx8192M`, `-Xmx4096M`, `-Xmx4g`,
   `--java-mem-size=4G`).
+- Gated-mode deviations (`run_lanemerge=true`, off by default):
+  - upstream runs `lanemerge` on the per-library collapsed fastqs AFTER
+    AdapterRemoval (main.nf 1125, a small post-collapse cat of the `.pe`
+    pair); the port merges the raw per-lane pairs BEFORE clipping (the
+    `lanemerge_hostremoval_fastq` raw-level semantics, main.nf 1197) so
+    that clipping, mapping, dedup, damage and QC all run on the merged
+    pair exactly once. The lane-tagged naming (`{sample}_L{lane}_R{1,2}`)
+    is upstream's TSV input-mode style; upstream detects multi-lane from
+    the sample sheet, the port gates on `run_lanemerge` (auto-detection
+    from filenames is impossible for a when-expression). Only R1 was
+    upstream's documented lanemerge concern; the port merges R2 as well
+    (pure-PE, both ends must exist).
+  - `fastqc` runs on the merged pair in gated mode (twin rule
+    `fastqc_lanemerged` with an exclusive when-gate); upstream runs
+    FastQC on the per-lane input fastqs.
+  - samples with lane-tagged files mixed with default-named files in one
+    directory: lane-tagged samples flow through the merged path, the
+    others through the default path (shell existence-check switch in
+    fastp / adapter_removal / hostremoval_input_fastq).
+  - local E2E 2026-08-27 (dev engine, no container): merged pairs
+    byte-identical to the single-pair inputs (S1: 3635 reads, S2: 3602
+    reads, R1/R2 counts equal). Full container run queued for tx-ubuntu
+    (docker daemon unavailable on the authoring machine).
 - Metagenomic-chain deviations (`rules/branches.oxoflow` B32-B37, all off by
   default):
   - upstream's run-level validation (main.nf 115-137) becomes rule gates +
