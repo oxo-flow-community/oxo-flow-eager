@@ -91,7 +91,7 @@
     "output_documentation: nf-core boilerplate docs process (markdown_to_html.py of static run docs); upstream runs it unconditionally, so porting it would change the default plan for zero analytical value",
     "get_software_versions: nf-core boilerplate versions process (scrapes $workflow/$nextflow native variables into a versions.yml, which has no oxo-flow equivalent)"
   ],
-  "rule_count": 57,
+  "rule_count": 60,
   "tools": [
     "fastqc",
     "adapterremoval",
