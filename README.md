@@ -48,6 +48,12 @@ Derived from `main.oxoflow`:
   `test/fixtures/raw/<sample>_R1.fastq.gz` and `<sample>_R2.fastq.gz`
   (directory input mode; the sample name is the text before the `_R1`/`_R2`
   suffix). Point the workflow at your own directory via the rule inputs.
+  To swap in real data without editing rule files: BAM input is supported
+  via `bam_input=true` + `input_bam=<path>` (the `convert_bam` rule extracts
+  FASTQ from the BAM; note the extracted reads currently feed nothing
+  downstream — see the `convertBam` row below), and the FASTQ fixture paths
+  themselves are the `input =` literals of the raw-read rules in
+  `main.oxoflow` (edit those paths to point at your FASTQ directory).
   Only paired-end reads are supported (the PE/SE-mixed merge branch of the
   upstream is not ported); set `single_end = false` (the default).
 - **Optional — multi-lane input** (`run_lanemerge=true`): name the pairs
@@ -165,9 +171,9 @@ the unported BAM pass-through mode (`indexinputbam`), or nf-core boilerplate
 | makeBT2Index | `make_bt2_index` | bowtie2 2.4.4 | `bowtie2-build` into `results/reference_genome/bt2_index/`; `when = config.mapper == 'bowtie2'` |
 | circulargenerator | `circulargenerator` | circularmapper 1.93.5, bwa | `circulargenerator -e -i -s` + `bwa index` on the elongated fasta; `when = config.mapper == 'circularmapper'` |
 | circularmapper | `circularmapper` | bwa + circularmapper 1.93.5 | `bwa aln` on the elongated reference + `realignsamfile` + sort/index; `when = config.mapper == 'circularmapper'` |
-| convertBam | `convert_bam` | samtools 1.12, pigz | `samtools bam2fq | pigz`; `when = config.bam_input` (default false — the fixture is FASTQ) |
+| convertBam | `convert_bam` | samtools 1.12, pigz | `samtools bam2fq \| pigz`; `when = config.bam_input` (default false — the fixture is FASTQ). DEAD END: the extracted `results/convert_bam/{sample}_R1.fastq.gz` feeds nothing downstream — `adapter_removal`'s precedence (fastp > lanemerge > raw fixtures) has no convert_bam branch, so `bam_input=true` currently produces the FASTQ but the workflow still runs on the fixture FASTQs (upstream wires convertBam into the preprocessing channels; wiring it here needs optional-input semantics, Traitome/oxo-flow#200) |
 | indexinputbam | — | samtools 1.12 | not ported — indexes the input BAM for upstream's BAM pass-through mode (`bam != 'NA' && !run_convertinputbam`, main.nf 657); the port's BAM-input mode routes through `convert_bam` (bam2fq) instead and nothing downstream consumes the input BAM directly, so no index is needed |
-| hostremoval_input_fastq | `hostremoval_input_fastq` | extract_map_reads.py (bundled) | PE branch verbatim (`-m`, `-of`/`-or`, `-t`); `when = config.hostremoval_input_fastq` |
+| hostremoval_input_fastq | `hostremoval_input_fastq` (+ `_bwamem` variant) | extract_map_reads.py (bundled) | PE branch verbatim (`-m`, `-of`/`-or`, `-t`); `when = config.hostremoval_input_fastq && config.mapper == 'bwaaln'`, consuming the bwaaln BAM `results/mapping/bwa/{sample}_PE.mapped.bam`. A second rule, `hostremoval_input_fastq_bwamem` (`when = ... && config.mapper == 'bwamem'`), consumes the bwamem BAM `results/mapping/bwa/{sample}.mapped.bam` — the same per-mapper split as `samtools_filter` (the two mappers emit different BAM names; a single rule cannot express "the one that exists"). bowtie2/circularmapper runs with hostremoval enabled leave the rule(s) off (their BAMs live under `results/mapping/{bt2,circularmapper}/`) |
 | samtools_flagstat | `samtools_flagstat` | samtools 1.12 | Verbatim: `samtools flagstat > {libraryid}_flagstat.stats` |
 | samtools_filter | `samtools_filter_{bwaaln,bwamem,bowtie2,circularmapper}` | samtools 1.12, pigz 2.6 | Four per-mapper rules sharing ONE output set; each is gated `when = config.run_bam_filtering && config.mapper == '<mapper>'` (mutually exclusive, so the released engine needs no any-mode semantics) and takes its mapper's mapped BAM as `BAM="{input[0]}"` (`results/mapping/bwa/{sample}_PE.mapped.bam` / `results/mapping/bwa/{sample}.mapped.bam` / `results/mapping/bt2/{sample}.mapped.bam` / `results/mapping/circularmapper/{sample}.mapped.bam`). The shared body carries the minreadlength-0 branches selected by `bam_unmapped_type`: `discard` (`-F4 -q <thr>`, default) and `fastq` (upstream `-f4` / `-F4 -q` + `samtools fastq -tN \| pigz -p <cpus-1>` + `rm`, the metagenomic-chain producer), both verbatim. The discard branch additionally writes an EMPTY `{sample}.unmapped.fastq.gz` placeholder — the engine requires every declared output to exist, and it is never consumed (the metagenomic rules are gated on `bam_unmapped_type == 'fastq'`). The `keep`/`bam`/`both` branches fail fast with a clear error; bwaaln variant live-verified on tx-ubuntu 2026-08-27 (run_bam_filtering=true, 15 succeeded / 0 failed) |
 | samtools_flagstat_after_filter | `samtools_flagstat_after_filter` | samtools 1.12 | `samtools flagstat` on the filtered BAM; `when = config.run_bam_filtering` |
