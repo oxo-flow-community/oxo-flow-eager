@@ -11,7 +11,7 @@ name = "branches"
 #
 # Ported here (were listed as excluded):
 #   unzip_reference, bwamem, make_bt2_index, bowtie2, circulargenerator,
-#   circularmapper, convert_bam, indexinputbam, hostremoval_input_fastq,
+#   circularmapper, convert_bam, hostremoval_input_fastq,
 #   samtools_filter, samtools_flagstat_after_filter, endor_spy,
 #   bedtools_coverage, bam_trim, post_ar_fastq_trimming,
 #   picard_addorreplacereadgroups, genotyping_ug, genotyping_hc,
@@ -238,13 +238,19 @@ time_limit = "4h"
 
 # ------------------------------------------------------------------
 # B9  HOSTREMOVAL_INPUT_FASTQ — extract host-mapped reads back to FASTQ.
+#     One variant per bwa mapper: the mapper's BAM naming differs (bwaaln
+#     writes {sample}_PE.mapped.bam, bwamem {sample}.mapped.bam — the
+#     same constraint as samtools_filter below), so exclusive mapper
+#     when-gates give each mode a real producer edge. bowtie2 /
+#     circularmapper BAMs (results/mapping/{bt2,circularmapper}/) remain
+#     unwired here (pre-existing gap, same naming constraint).
 # ------------------------------------------------------------------
 [[rules]]
 name = "hostremoval_input_fastq"
 description = "Extract host-mapped reads to FASTQ via extract_map_reads.py (upstream hostremoval_input_fastq)"
-when = "config.hostremoval_input_fastq"
+when = "config.hostremoval_input_fastq && config.mapper == 'bwaaln'"
 depends_on = ["lanemerge", "lanemerge_r2"]
-input = ["results/mapping/bwa/{sample}.mapped.bam"]
+input = ["results/mapping/bwa/{sample}_PE.mapped.bam"]
 output = ["results/hostremoved_fastq/{sample}.mapped.hostremoved.fwd.fq.gz", "results/hostremoved_fastq/{sample}.mapped.hostremoved.rev.fq.gz"]
 shell = '''
 set -euo pipefail
@@ -269,6 +275,32 @@ tags = ["fastq", "preprocessing"]
 threads = 4
 memory = "4G"
 time_limit = "24h"
+
+[[rules]]
+name = "hostremoval_input_fastq_bwamem"
+description = "Extract host-mapped reads to FASTQ via extract_map_reads.py, bwamem BAM (upstream hostremoval_input_fastq)"
+when = "config.hostremoval_input_fastq && config.mapper == 'bwamem'"
+depends_on = ["lanemerge", "lanemerge_r2"]
+input = ["results/mapping/bwa/{sample}.mapped.bam"]
+output = ["results/hostremoved_fastq/{sample}.mapped.hostremoved.fwd.fq.gz", "results/hostremoved_fastq/{sample}.mapped.hostremoved.rev.fq.gz"]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/hostremoved_fastq
+# Upstream feeds the LANEMERGED raw reads into extract_map_reads.py
+# (ch_fastqlanemerge_for_hostremovalfastq, main.nf 1197-1225 + 1489);
+# with run_lanemerge on, prefer the merged pair, else the default-path
+# pair (existence check — the default path is unchanged).
+if [ -s "$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz" ]; then
+  FQ1="$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz"
+  FQ2="$ROOT/results/lanemerging/{sample}_R2_lanemerged.fq.gz"
+else
+  FQ1="$ROOT/test/fixtures/raw/{sample}_R1.fastq.gz"
+  FQ2="$ROOT/test/fixtures/raw/{sample}_R2.fastq.gz"
+fi
+extract_map_reads.py "{input[0]}" "$FQ1" -rev "$FQ2" -m {config.hostremoval_mode} -of "results/hostremoved_fastq/{sample}.mapped.hostremoved.fwd.fq.gz" -or "results/hostremoved_fastq/{sample}.mapped.hostremoved.rev.fq.gz" -t {threads}
+'''
+tags = ["fastq", "preprocessing"]
 
 # ------------------------------------------------------------------
 # B10  SAMTOOLS_FILTER — BAM filtering branch (params.run_bam_filtering).
