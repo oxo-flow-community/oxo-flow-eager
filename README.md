@@ -49,9 +49,11 @@ Derived from `main.oxoflow`:
   (directory input mode; the sample name is the text before the `_R1`/`_R2`
   suffix). Point the workflow at your own directory via the rule inputs.
   To swap in real data without editing rule files: BAM input is supported
-  via `bam_input=true` + `input_bam=<path>` (the `convert_bam` rule extracts
-  FASTQ from the BAM; note the extracted reads currently feed nothing
-  downstream — see the `convertBam` row below), and the FASTQ fixture paths
+  via `bam_input=true` + `input_bam=<path>` — the `convert_bam` rule
+  extracts a paired-end FASTQ pair (`results/convert_bam/{sample}_R{1,2}.fastq.gz`)
+  that feeds FastQC, fastp (when the poly-G gate is on) and AdapterRemoval
+  in place of the raw fixture pair (see the `convertBam` row below), and
+  the FASTQ fixture paths
   themselves are the `input =` literals of the raw-read rules in
   `main.oxoflow` (edit those paths to point at your FASTQ directory).
   Only paired-end reads are supported (the PE/SE-mixed merge branch of the
@@ -171,7 +173,7 @@ the unported BAM pass-through mode (`indexinputbam`), or nf-core boilerplate
 | makeBT2Index | `make_bt2_index` | bowtie2 2.4.4 | `bowtie2-build` into `results/reference_genome/bt2_index/`; `when = config.mapper == 'bowtie2'` |
 | circulargenerator | `circulargenerator` | circularmapper 1.93.5, bwa | `circulargenerator -e -i -s` + `bwa index` on the elongated fasta; `when = config.mapper == 'circularmapper'` |
 | circularmapper | `circularmapper` | bwa + circularmapper 1.93.5 | `bwa aln` on the elongated reference + `realignsamfile` + sort/index; `when = config.mapper == 'circularmapper'` |
-| convertBam | `convert_bam` | samtools 1.12, pigz | `samtools bam2fq \| pigz`; `when = config.bam_input` (default false — the fixture is FASTQ). DEAD END: the extracted `results/convert_bam/{sample}_R1.fastq.gz` feeds nothing downstream — `adapter_removal`'s precedence (fastp > lanemerge > raw fixtures) has no convert_bam branch, so `bam_input=true` currently produces the FASTQ but the workflow still runs on the fixture FASTQs (upstream wires convertBam into the preprocessing channels; wiring it here needs optional-input semantics, Traitome/oxo-flow#200) |
+| convertBam | `convert_bam` | samtools 1.12, pigz | `when = config.bam_input` (default false — the fixture is FASTQ). Extracts a PAIR: `samtools collate -O -u \| samtools fastq -1/-2 -s /dev/null -0 /dev/null -n -F 0x900` + pigz (samtools fastq -1/-2 write FILES, not stdout; collate ensures mate pairing for the unique-QNAME requirement — duplicate QNAMEs emit one pair per name). Deviations from upstream's SE-only `samtools fastq \| pigz` interleaved shape: the port is pure-PE, so the converted reads are emitted as an R1/R2 pair. WIRED (upstream mixes the converted reads into fastp + fastqc, main.nf 620-700): `fastqc_baminput` (gated twin of fastqc, `when = config.bam_input && !config.skip_fastqc`, shared output set) runs on the pair; `adapter_removal` and `fastp` take the pair FIRST in their existence-check precedence (converted > fastp > lanemerged > raw), so `bam_input=true` runs the whole preprocessing chain on the BAM's reads. Fixture `test/fixtures/bam/S1.bam` (unmapped PE pair, round-trip-verified through the exact convert_bam command shape) is dry-run-tested in test/run.sh |
 | indexinputbam | — | samtools 1.12 | not ported — indexes the input BAM for upstream's BAM pass-through mode (`bam != 'NA' && !run_convertinputbam`, main.nf 657); the port's BAM-input mode routes through `convert_bam` (bam2fq) instead and nothing downstream consumes the input BAM directly, so no index is needed |
 | hostremoval_input_fastq | `hostremoval_input_fastq` (+ `_bwamem` variant) | extract_map_reads.py (bundled) | PE branch verbatim (`-m`, `-of`/`-or`, `-t`); `when = config.hostremoval_input_fastq && config.mapper == 'bwaaln'`, consuming the bwaaln BAM `results/mapping/bwa/{sample}_PE.mapped.bam`. A second rule, `hostremoval_input_fastq_bwamem` (`when = ... && config.mapper == 'bwamem'`), consumes the bwamem BAM `results/mapping/bwa/{sample}.mapped.bam` — the same per-mapper split as `samtools_filter` (the two mappers emit different BAM names; a single rule cannot express "the one that exists"). bowtie2/circularmapper runs with hostremoval enabled leave the rule(s) off (their BAMs live under `results/mapping/{bt2,circularmapper}/`) |
 | samtools_flagstat | `samtools_flagstat` | samtools 1.12 | Verbatim: `samtools flagstat > {libraryid}_flagstat.stats` |
@@ -315,6 +317,9 @@ Additional deviations from upstream (all on the default path):
   `run_bam_filtering` (incl. the metagenomic screening chain under
   `run_metagenomic_screening` with `metagenomic_tool` = `kraken`/`malt`) IS
   ported. Default values are kept in `[config]` where a config key exists.
+  `run_convertinputbam` is ported as `bam_input` (with `input_bam` for
+  upstream's `bam` path); upstream's BAM pass-through mode (`bam != 'NA'`
+  without conversion, `indexinputbam`) is not ported — see its row above.
 
 ## Test
 

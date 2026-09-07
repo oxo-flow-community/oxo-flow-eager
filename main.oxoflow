@@ -318,7 +318,7 @@ time_limit = "4h"
 [[rules]]
 name = "fastqc"
 description = "Raw sequencing QC with FastQC on the input FASTQs"
-when = "!config.skip_fastqc && !config.run_lanemerge"
+when = "!config.skip_fastqc && !config.run_lanemerge && !config.bam_input"
 input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
 output = [
     "results/fastqc/input_fastq/zips/{sample}_R1_raw_fastqc.zip",
@@ -362,7 +362,7 @@ time_limit = "4h"
 [[rules]]
 name = "fastqc_lanemerged"
 description = "Raw sequencing QC with FastQC on the lanemerged FASTQs (gated twin of fastqc for run_lanemerge)"
-when = "config.run_lanemerge && !config.skip_fastqc"
+when = "config.run_lanemerge && !config.skip_fastqc && !config.bam_input"
 depends_on = ["lanemerge", "lanemerge_r2"]
 input = [
     "results/lanemerging/{sample}_R1_lanemerged.fq.gz",
@@ -395,6 +395,49 @@ memory = "4G"
 time_limit = "4h"
 
 # ------------------------------------------------------------------
+# R4c  FASTQC_BAMINPUT — gated twin of fastqc for bam_input: FastQC on
+#      the converted pair from convert_bam instead of the raw fixture
+#      pair. The two rules share one output set and their when-gates are
+#      mutually exclusive (same pattern as fastqc_lanemerged). Upstream
+#      wires convertBam's output into fastqc via
+#      ch_convertbam_for_fastqc (main.nf 620-700).
+# ------------------------------------------------------------------
+[[rules]]
+name = "fastqc_baminput"
+description = "Raw sequencing QC with FastQC on the BAM-converted FASTQs (gated twin of fastqc for bam_input)"
+when = "config.bam_input && !config.skip_fastqc"
+depends_on = ["convert_bam"]
+input = [
+    "results/convert_bam/{sample}_R1.fastq.gz",
+    "results/convert_bam/{sample}_R2.fastq.gz",
+]
+output = [
+    "results/fastqc/input_fastq/zips/{sample}_R1_raw_fastqc.zip",
+    "results/fastqc/input_fastq/zips/{sample}_R2_raw_fastqc.zip",
+    "results/fastqc/input_fastq/{sample}_R1_raw_fastqc.html",
+    "results/fastqc/input_fastq/{sample}_R2_raw_fastqc.html",
+]
+shell = '''
+set -euo pipefail
+ROOT=$PWD
+mkdir -p results/fastqc/input_fastq
+cd results/fastqc/input_fastq
+fastqc -t {threads} -q -o . "$ROOT/results/convert_bam/{sample}_R1.fastq.gz" "$ROOT/results/convert_bam/{sample}_R2.fastq.gz"
+rename 's/^{sample}_R1\.fastq\.gz_fastqc\.zip$/{sample}_R1_raw_fastqc.zip/' {sample}_R1.fastq.gz_fastqc.zip
+rename 's/^{sample}_R1\.fastq\.gz_fastqc\.html$/{sample}_R1_raw_fastqc.html/' {sample}_R1.fastq.gz_fastqc.html
+rename 's/^{sample}_R2\.fastq\.gz_fastqc\.zip$/{sample}_R2_raw_fastqc.zip/' {sample}_R2.fastq.gz_fastqc.zip
+rename 's/^{sample}_R2\.fastq\.gz_fastqc\.html$/{sample}_R2_raw_fastqc.html/' {sample}_R2.fastq.gz_fastqc.html
+mkdir -p zips
+mv {sample}_R1_raw_fastqc.zip {sample}_R2_raw_fastqc.zip zips/
+'''
+tags = ["qc", "fastq"]
+
+[rules.resources]
+threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
 # R5  FASTP  (mc_small: 2 cpu / 4G / 4h)
 #     Poly-G complexity filter; off by default, same as upstream
 #     (params.complexity_filter_poly_g). Verbatim flags. Upstream feeds
@@ -407,7 +450,7 @@ time_limit = "4h"
 name = "fastp"
 description = "Poly-G complexity filtering with fastp (off by default, same as upstream)"
 when = "config.complexity_filter_poly_g && config.colour_chemistry == 2"
-depends_on = ["lanemerge", "lanemerge_r2"]
+depends_on = ["lanemerge", "lanemerge_r2", "convert_bam"]
 input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
 output = [
     "results/FastP/{sample}_R1.pG.fq.gz",
@@ -419,11 +462,14 @@ set -euo pipefail
 ROOT=$PWD
 mkdir -p results/FastP
 cd results/FastP
-# run_lanemerge switches the input to the lanemerged pair (upstream fastp
-# runs per lane pre-merge; the port filters the merged reads instead —
-# identical reads, one invocation). The merged pair only exists when the
-# gate is on, so the default path is unchanged.
-if [ -s "$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz" ]; then
+# Input precedence, mirroring upstream's channel mix: BAM-converted reads
+# (bam_input; upstream ch_convertbam_for_fastp) > lanemerged pair
+# (run_lanemerge) > the default-path raw pair. The merged/converted files
+# only exist when their gate is on, so the default path is unchanged.
+if [ -s "$ROOT/results/convert_bam/{sample}_R1.fastq.gz" ]; then
+  IN1="$ROOT/results/convert_bam/{sample}_R1.fastq.gz"
+  IN2="$ROOT/results/convert_bam/{sample}_R2.fastq.gz"
+elif [ -s "$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz" ]; then
   IN1="$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz"
   IN2="$ROOT/results/lanemerging/{sample}_R2_lanemerged.fq.gz"
 else
@@ -514,15 +560,16 @@ time_limit = "4h"
 #     --adapter1/--adapter2, then cat the 5 `.pe`-prefixed gz parts
 #     (files are written as <base>.pe.collapsed.gz etc. because AR is
 #     invoked with --basename <base>.pe, as upstream), mv settings,
-#     AdapterRemovalFixPrefix | pigz. The fastp gate above switches
-#     the input files when complexity_filter_poly_g is enabled
-#     (upstream channel mix ch_fastp_for_adapterremoval).
+#     AdapterRemovalFixPrefix | pigz. The bam_input / fastp /
+#     run_lanemerge gates switch the input files via the precedence
+#     chain below (upstream channel mixes ch_convertbam_for_fastp /
+#     ch_fastp_for_adapterremoval).
 # ------------------------------------------------------------------
 [[rules]]
 name = "adapter_removal"
 description = "Adapter clipping and paired-end read merging with AdapterRemoval + AdapterRemovalFixPrefix (PE collapse branch)"
 when = "!config.skip_adapterremoval"
-depends_on = ["fastp", "lanemerge", "lanemerge_r2"]
+depends_on = ["fastp", "lanemerge", "lanemerge_r2", "convert_bam"]
 input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
 output = [
     "results/adapterremoval/output/{sample}_R1_L{config.lane}.pe.combined.fq.gz",
@@ -531,11 +578,15 @@ output = [
 shell = '''
 set -euo pipefail
 ROOT=$PWD
-# Input precedence, mirroring upstream's channel mix: fastp-filtered reads
+# Input precedence, mirroring upstream's channel mix: BAM-converted reads
+# (bam_input; upstream ch_convertbam_for_fastp) > fastp-filtered reads
 # (when the poly-G gate is on) > lanemerged pair (when run_lanemerge is on)
 # > the default-path raw pair. Each branch only fires when its files exist,
 # so the default path is unchanged.
-if [ -s "$ROOT/results/FastP/{sample}_R1.pG.fq.gz" ]; then
+if [ -s "$ROOT/results/convert_bam/{sample}_R1.fastq.gz" ]; then
+  R1="$ROOT/results/convert_bam/{sample}_R1.fastq.gz"
+  R2="$ROOT/results/convert_bam/{sample}_R2.fastq.gz"
+elif [ -s "$ROOT/results/FastP/{sample}_R1.pG.fq.gz" ]; then
   R1="$ROOT/results/FastP/{sample}_R1.pG.fq.gz"
   R2="$ROOT/results/FastP/{sample}_R2.pG.fq.gz"
 elif [ -s "$ROOT/results/lanemerging/{sample}_R1_lanemerged.fq.gz" ]; then
