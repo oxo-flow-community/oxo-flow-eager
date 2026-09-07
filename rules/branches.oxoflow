@@ -221,7 +221,7 @@ time_limit = "24h"
 [[rules]]
 name = "convert_bam"
 description = "Convert a BAM input to FASTQ (upstream convertBam, params.bam mode)"
-when = "config.bam_input"
+when = "config.bam_input && config.run_convertinputbam"
 input = ["{config.input_bam}"]
 output = ["results/convert_bam/{sample}_R1.fastq.gz"]
 shell = '''
@@ -233,6 +233,37 @@ tags = ["fastq", "preprocessing"]
 
 [rules.resources]
 threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# B8  INDEXINPUTBAM — BAM pass-through: index the user-supplied BAM as
+#     the mapping output so the whole downstream BAM chain (flagstat,
+#     dedup, preseq, ...) consumes it unchanged. Mutually exclusive with
+#     convert_bam: the convert route (run_convertinputbam=true) stays a
+#     documented dead end (see the README convertBam row) until optional
+#     input semantics land (Traitome/oxo-flow#200).
+# ------------------------------------------------------------------
+[[rules]]
+name = "indexinputbam"
+description = "Index the input BAM in place as the mapping output (upstream indexinputbam, params.bam mode)"
+when = "config.bam_input && !config.run_convertinputbam"
+input = ["{config.input_bam}"]
+output = [
+  "results/mapping/bwa/{sample}_PE.mapped.bam",
+  "results/mapping/bwa/{sample}_PE.mapped.bam.bai",
+]
+shell = '''
+set -euo pipefail
+mkdir -p results/mapping/bwa
+cp "{input[0]}" "results/mapping/bwa/{sample}_PE.mapped.bam"
+if [ "{config.large_ref}" = "true" ]; then SIZE="-c"; else SIZE=""; fi
+samtools index $SIZE "results/mapping/bwa/{sample}_PE.mapped.bam" "results/mapping/bwa/{sample}_PE.mapped.bam.bai"
+'''
+tags = ["bam", "alignment"]
+
+[rules.resources]
+threads = 1
 memory = "4G"
 time_limit = "4h"
 
