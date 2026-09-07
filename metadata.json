@@ -50,6 +50,7 @@
     "genotyping_ug",
     "hostremoval_input_fastq",
     "hostremoval_input_fastq_bwamem",
+    "indexinputbam",
     "kraken",
     "kraken_merge",
     "kraken_parse",
@@ -90,14 +91,13 @@
   "excluded": [
     "library_merge / additional_library_merge: structural — upstream merges the per-LIBRARY BAMs of a sample (samtools merge of the per-library dedup / bam_trim BAMs, main.nf 1967 / 2320). The port's directory-input model has ONE library per sample (library = sample, lane = 0) and one BAM per sample at every stage, so there are no multi-library BAMs to merge; declaring each library as its own sample (or pre-merging) remains the workaround. lanemerge-style input_groups cannot express this either: it groups FILES of a pattern, and the port has no per-library file dimension",
     "seqtype_merge: structural — upstream merges the per-seqtype mapped BAMs of mixed PE/SE libraries into one BAM per library (samtools merge, main.nf 1597); the port is pure-PE (directory input, sample = text before _R1/_R2) with one mapped BAM per sample, so there are no mixed-PE/SE BAMs to merge. Convert SE samples to PE or run SE-only samples separately",
-    "convertBam (ported as `convert_bam` but a documented dead end: with `bam_input=true` the rule extracts FASTQ while downstream still runs on the fixture FASTQs — upstream wires convertBam into the preprocessing channels; wiring it needs optional-input semantics, Traitome/oxo-flow#200; see the README fidelity row)",
-    "indexinputbam — upstream indexes the input BAM for BAM pass-through mode (`bam != 'NA' && !run_convertinputbam`, main.nf 657); not ported (the port's BAM-input mode routes through `convert_bam`/bam2fq and nothing downstream consumes the input BAM directly)"
+    "convertBam (ported as `convert_bam` but a documented dead end: with `bam_input=true && run_convertinputbam=true` the rule extracts FASTQ while downstream still runs on the fixture FASTQs — upstream wires convertBam into the preprocessing channels; wiring it needs optional-input semantics, Traitome/oxo-flow#200; see the README fidelity row)"
   ],
   "not_applicable": [
     "output_documentation: nf-core boilerplate docs process (markdown_to_html.py of static run docs); upstream runs it unconditionally, so porting it would change the default plan for zero analytical value",
     "get_software_versions: nf-core boilerplate versions process (scrapes $workflow/$nextflow native variables into a versions.yml, which has no oxo-flow equivalent)"
   ],
-  "rule_count": 61,
+  "rule_count": 62,
   "tools": [
     "fastqc",
     "adapterremoval",
