@@ -106,6 +106,12 @@ pileupcaller_bedfile = ""
 unzip_reference = false
 bam_input = false
 input_bam = ""
+# indexinputbam branch: with bam_input=true the input BAM is indexed in
+# place as the mapping output (BAM pass-through); run_convertinputbam
+# switches to the convert_bam (bam2fq) route instead. large_ref (mapping
+# section above) mirrors upstream's `samtools index -c` for large
+# references (CSI index).
+run_convertinputbam = false
 hostremoval_input_fastq = false
 hostremoval_mode = "mapped"
 run_bam_filtering = false
@@ -362,7 +368,7 @@ time_limit = "4h"
 [[rules]]
 name = "fastqc_lanemerged"
 description = "Raw sequencing QC with FastQC on the lanemerged FASTQs (gated twin of fastqc for run_lanemerge)"
-when = "config.run_lanemerge && !config.skip_fastqc && !config.bam_input"
+when = "config.run_lanemerge && !config.skip_fastqc && (!config.bam_input || config.run_convertinputbam)"
 depends_on = ["lanemerge", "lanemerge_r2"]
 input = [
     "results/lanemerging/{sample}_R1_lanemerged.fq.gz",
@@ -405,7 +411,7 @@ time_limit = "4h"
 [[rules]]
 name = "fastqc_baminput"
 description = "Raw sequencing QC with FastQC on the BAM-converted FASTQs (gated twin of fastqc for bam_input)"
-when = "config.bam_input && !config.skip_fastqc"
+when = "config.bam_input && config.run_convertinputbam && !config.skip_fastqc"
 depends_on = ["convert_bam"]
 input = [
     "results/convert_bam/{sample}_R1.fastq.gz",
@@ -449,7 +455,7 @@ time_limit = "4h"
 [[rules]]
 name = "fastp"
 description = "Poly-G complexity filtering with fastp (off by default, same as upstream)"
-when = "config.complexity_filter_poly_g && config.colour_chemistry == 2"
+when = "config.complexity_filter_poly_g && config.colour_chemistry == 2 && (!config.bam_input || config.run_convertinputbam)"
 depends_on = ["lanemerge", "lanemerge_r2", "convert_bam"]
 input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
 output = [
@@ -511,7 +517,7 @@ time_limit = "4h"
 [[rules]]
 name = "lanemerge"
 description = "Concatenate a sample's per-lane R1 FASTQs into one merged R1 (upstream lanemerge, raw level; gated by run_lanemerge)"
-when = "config.run_lanemerge"
+when = "config.run_lanemerge && (!config.bam_input || config.run_convertinputbam)"
 input_groups = [
     { pattern = "test/fixtures/raw/{sample}_L{lane}_R1.fastq.gz", group_by = "sample", keep = "lane" }
 ]
@@ -535,7 +541,7 @@ time_limit = "4h"
 [[rules]]
 name = "lanemerge_r2"
 description = "Concatenate a sample's per-lane R2 FASTQs into one merged R2 (upstream lanemerge, raw level; gated by run_lanemerge)"
-when = "config.run_lanemerge"
+when = "config.run_lanemerge && (!config.bam_input || config.run_convertinputbam)"
 input_groups = [
     { pattern = "test/fixtures/raw/{sample}_L{lane}_R2.fastq.gz", group_by = "sample", keep = "lane" }
 ]
@@ -568,7 +574,7 @@ time_limit = "4h"
 [[rules]]
 name = "adapter_removal"
 description = "Adapter clipping and paired-end read merging with AdapterRemoval + AdapterRemovalFixPrefix (PE collapse branch)"
-when = "!config.skip_adapterremoval"
+when = "!config.skip_adapterremoval && (!config.bam_input || config.run_convertinputbam)"
 depends_on = ["fastp", "lanemerge", "lanemerge_r2", "convert_bam"]
 input = ["test/fixtures/raw/{sample}_R1.fastq.gz", "test/fixtures/raw/{sample}_R2.fastq.gz"]
 output = [
@@ -617,7 +623,7 @@ time_limit = "4h"
 [[rules]]
 name = "fastqc_after_clipping"
 description = "FastQC on the adapter-clipped/merged reads"
-when = "!config.skip_adapterremoval && !config.skip_fastqc"
+when = "!config.skip_adapterremoval && !config.skip_fastqc && (!config.bam_input || config.run_convertinputbam)"
 input = ["results/adapterremoval/output/{sample}_R1_L{config.lane}.pe.combined.fq.gz"]
 output = [
     "results/fastqc/after_clipping/zips/{sample}_R1_L{config.lane}.pe.combined_fastqc.zip",
@@ -653,7 +659,7 @@ time_limit = "4h"
 [[rules]]
 name = "bwa_aln"
 description = "Map reads with bwa aln + bwa samse, sort with samtools (PE branch)"
-when = "config.mapper == 'bwaaln'"
+when = "config.mapper == 'bwaaln' && (!config.bam_input || config.run_convertinputbam)"
 input = [
     "results/adapterremoval/output/{sample}_R1_L{config.lane}.pe.combined.fq.gz",
     "results/reference_genome/bwa_index/BWAIndex/reference.fa",

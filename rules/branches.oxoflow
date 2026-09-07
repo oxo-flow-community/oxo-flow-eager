@@ -215,26 +215,24 @@ memory = "4G"
 time_limit = "24h"
 
 # ------------------------------------------------------------------
-# B7  CONVERT_BAM — BAM-input mode (upstream convertBam,
-#     params.run_convertinputbam). Gate: bam_input (default false; the
-#     port fixture is FASTQ). Emits a PAIR (R1+R2) that feeds the
-#     preprocessing chain (fastqc_baminput twin + adapter_removal
-#     precedence branch + fastp precedence branch) — upstream wires the
-#     converted reads into both ch_convertbam_for_fastp and
-#     ch_convertbam_for_fastqc (main.nf 620-700). Deviation: upstream's
-#     convertBam is SE-only (`samtools fastq | pigz` interleaved); the
-#     port is pure-PE, so the extraction runs `samtools collate |
-#     samtools fastq -1/-2` (unique-QNAME collation; samtools fastq
-#     emits one pair per distinct QNAME). samtools fastq -1/-2 write
-#     FILES (not stdout), so the rule writes plain tmp files and pigz's
-#     them to the final names. B8 indexinputbam (BAM pass-through,
-#     `bam != 'NA' && !run_convertinputbam`) is not ported — see the
-#     indexinputbam row in README.md.
+# B7  CONVERT_BAM — BAM-to-FASTQ mode (upstream convertBam,
+#     params.run_convertinputbam). Gate: bam_input && run_convertinputbam
+#     (indexinputbam B8 takes bam_input alone). Emits a PAIR (R1+R2)
+#     that feeds the preprocessing chain (fastqc_baminput twin +
+#     adapter_removal precedence branch + fastp precedence branch) —
+#     upstream wires the converted reads into both
+#     ch_convertbam_for_fastp and ch_convertbam_for_fastqc (main.nf
+#     620-700). Deviation: upstream's convertBam is SE-only (`samtools
+#     fastq | pigz` interleaved); the port is pure-PE, so the extraction
+#     runs `samtools collate | samtools fastq -1/-2` (unique-QNAME
+#     collation; samtools fastq emits one pair per distinct QNAME).
+#     samtools fastq -1/-2 write FILES (not stdout), so the rule writes
+#     plain tmp files and pigz's them to the final names.
 # ------------------------------------------------------------------
 [[rules]]
 name = "convert_bam"
 description = "Convert a BAM input to a paired-end FASTQ pair (upstream convertBam, params.bam mode)"
-when = "config.bam_input"
+when = "config.bam_input && config.run_convertinputbam"
 input = ["{config.input_bam}"]
 output = ["results/convert_bam/{sample}_R1.fastq.gz", "results/convert_bam/{sample}_R2.fastq.gz"]
 shell = '''
@@ -255,6 +253,37 @@ tags = ["fastq", "preprocessing"]
 
 [rules.resources]
 threads = 2
+memory = "4G"
+time_limit = "4h"
+
+# ------------------------------------------------------------------
+# B8  INDEXINPUTBAM — BAM pass-through (upstream indexinputbam,
+#     `bam != 'NA' && !run_convertinputbam`): index the user-supplied
+#     BAM as the canonical mapped BAM so the whole downstream BAM chain
+#     (flagstat, dedup, preseq, ...) consumes it unchanged. Mutually
+#     exclusive with convert_bam (run_convertinputbam switches to the
+#     bam2fq route above).
+# ------------------------------------------------------------------
+[[rules]]
+name = "indexinputbam"
+description = "Index the input BAM in place as the mapping output (upstream indexinputbam, params.bam mode)"
+when = "config.bam_input && !config.run_convertinputbam"
+input = ["{config.input_bam}"]
+output = [
+  "results/mapping/bwa/{sample}_PE.mapped.bam",
+  "results/mapping/bwa/{sample}_PE.mapped.bam.bai",
+]
+shell = '''
+set -euo pipefail
+mkdir -p results/mapping/bwa
+cp "{input[0]}" "results/mapping/bwa/{sample}_PE.mapped.bam"
+if [ "{config.large_ref}" = "true" ]; then SIZE="-c"; else SIZE=""; fi
+samtools index $SIZE "results/mapping/bwa/{sample}_PE.mapped.bam" "results/mapping/bwa/{sample}_PE.mapped.bam.bai"
+'''
+tags = ["bam", "alignment"]
+
+[rules.resources]
+threads = 1
 memory = "4G"
 time_limit = "4h"
 
