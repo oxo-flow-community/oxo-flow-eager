@@ -42,6 +42,7 @@
     "fastp",
     "fastqc",
     "fastqc_after_clipping",
+    "fastqc_baminput",
     "fastqc_lanemerged",
     "genotyping_angsd",
     "genotyping_freebayes",
@@ -97,7 +98,7 @@
     "output_documentation: nf-core boilerplate docs process (markdown_to_html.py of static run docs); upstream runs it unconditionally, so porting it would change the default plan for zero analytical value",
     "get_software_versions: nf-core boilerplate versions process (scrapes $workflow/$nextflow native variables into a versions.yml, which has no oxo-flow equivalent)"
   ],
-  "rule_count": 62,
+  "rule_count": 63,
   "tools": [
     "fastqc",
     "adapterremoval",
@@ -128,6 +129,7 @@
     "requirements": [
       "reference genome FASTA, plain and uncompressed (.gz references are not supported — upstream's unzip_reference step is not ported); the workflow builds the .fai / .dict / BWA indices itself",
       "paired-end FASTQ pairs named <sample>_R1.fastq.gz / <sample>_R2.fastq.gz in a directory (directory input mode; sample = text before the _R1/_R2 suffix); single-end is not supported",
+      "optional — BAM input: set bam_input=true and input_bam=<path to one BAM>. Default is the BAM pass-through: indexinputbam copies the BAM to results/mapping/bwa/<sample>_PE.mapped.bam (+ .bai, samtools index -c when large_ref=true) and the whole downstream BAM chain (flagstat, dedup, preseq, ...) consumes it unchanged. Alternatively run_convertinputbam=true routes through convert_bam, which extracts a paired-end FASTQ pair (results/convert_bam/<sample>_R{1,2}.fastq.gz, via samtools collate | samtools fastq -1/-2) that feeds FastQC (fastqc_baminput), fastp (when the poly-G gate is on) and AdapterRemoval in place of the raw fixture pair. Note {config.input_bam} is ONE path used per sample of the cohort — point it at a per-sample BAM or run one sample at a time. Unmapped-only BAMs (no @SQ lines) work; mapped BAMs are handled the same way",
       "optional — multi-lane input: name the pairs <sample>_L<lane>_R1.fastq.gz / _R2.fastq.gz (lane-tagged, as in upstream's TSV mode) and set run_lanemerge=true: the lanemerge rules concatenate the per-lane pairs of each sample into one merged pair (results/lanemerging/) that feeds AdapterRemoval and hostremoval_input_fastq; samples without lane-tagged files keep using the default-named pair. Requires oxo-flow >= 0.16.0 (input_groups, Traitome/oxo-flow#231)",
       "optional — pileupCaller genotyping (run_genotyping=true genotyping_tool='pileupcaller') requires pileupcaller_snpfile and pileupcaller_bedfile; the rule fails fast without them",
       "optional — metagenomic screening (run_metagenomic_screening=true, bam_unmapped_type='fastq') requires metagenomic_tool='kraken' with a kraken2_db (kraken2 database directory or .tar.gz bundle, unpacked by the kraken rule) or metagenomic_tool='malt' with a malt_db (MALT database directory); maltextract additionally requires maltextract_taxon_list and maltextract_ncbifiles. The chain is validate/dry-run-tested but not yet live-verified",
