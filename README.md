@@ -211,8 +211,8 @@ or nf-core boilerplate (`output_documentation`, `get_software_versions`).
 | bcftools_stats | `bcftools_stats` | bcftools 1.12 | `bcftools stats <vcf.gz> -F <fasta>`; `when = config.run_bcftools_stats` (source VCF via `bcftools_stats_source`) |
 | eigenstrat_snp_coverage | `eigenstrat_snp_coverage` | eigenstratdatabasetools 1.0.2, python 3.9.4 | Off by default, same as upstream. Verbatim: `eigenstrat_snp_coverage -i pileupcaller.double >double_eigenstrat_coverage.txt` + `parse_snp_cov.py` (bundled upstream script, called via `python3 scripts/parse_snp_cov.py` — oxo-flow does not auto-add `bin/` to PATH) |
 | metagenomic_complexity_filter | `metagenomic_complexity_filter` | bbduk 38.92 | verbatim `bbduk.sh -Xmx<g>g in=... threads=N entropymask=f entropy=<entropy> out=<in>_lowcomplexityremoved.fq.gz 2> <in>_bbduk.stats` — the output keeps upstream's `${input}_lowcomplexityremoved.fq.gz` naming; `when = metagenomic_complexity_filter && run_bam_filtering && bam_unmapped_type == 'fastq'` (upstream validates the same combination at workflow start, main.nf 115-122) |
-| malt | `malt` | malt 0.61 | verbatim `malt-run -J-Xmx<g>g -t N -v -o . -d <db> [-a . -f SAM] -id -m -at -top <min-supp> -mq --memoryMode -i <all fastqs>` — one instance over ALL samples' unmapped reads (upstream `collect()`); reads the entropy-filtered fastqs when the complexity filter is on (upstream channel switch); `--database` is split into `malt_db` + `kraken2_db`; the percent/reads min-support exclusivity check (main.nf 129-134) is a shell guard; the per-input `.rma6` outputs are undeclared (no fixed template) — only `malt.log` is declared; NOT yet live-verified; `when = run_metagenomic_screening && run_bam_filtering && bam_unmapped_type == 'fastq' && metagenomic_tool == 'malt'` |
-| maltextract | `maltextract` | hops 0.35 | verbatim `MaltExtract -Xmx<g>g -t <taxon_list> -i <rma6s> -o results/ -r <ncbifiles> -p N -f -a --minPI <flags>` + `postprocessing.AMPS.r -r results/ -m -t N -n <taxon_list> -j`; requires `maltextract_taxon_list` + `maltextract_ncbifiles` (fail-fast guard); consumes the rma6s via glob with a DAG edge through `malt.log`; NOT yet live-verified; `when = run_maltextract && metagenomic_tool == 'malt'` (upstream verbatim) |
+| malt | `malt` | malt 0.61 | verbatim `malt-run -J-Xmx<g>g -t N -v -o . -d <db> [-a . -f SAM] -id -m -at -top <min-supp> -mq --memoryMode -i <all fastqs>` — one instance over ALL samples' unmapped reads (upstream `collect()`); reads the entropy-filtered fastqs when the complexity filter is on (upstream channel switch); `--database` is split into `malt_db` + `kraken2_db`; the percent/reads min-support exclusivity check (main.nf 129-134) is a shell guard; the per-input `.rma6` outputs are undeclared (no fixed template) — only `malt.log` is declared; live-verified on bioinfo-wsx 2026-09-08 (nfcore/eager:2.5.3, MALT 0.6.1): DB built via `malt-build -i genome_acc.fa -o malt-db2 -s1 -t 4 -mh 100 -v` + acc2taxa map → 9606, `--memoryMode map` required (load OOMs), engine-verbatim full run reaches malt ✓ 17.9s with `-mq 100` (run-malt7.out) and chain v6 (percent min-support 0.01) produced rma6s feeding maltextract; `when = run_metagenomic_screening && run_bam_filtering && bam_unmapped_type == 'fastq' && metagenomic_tool == 'malt'` |
+| maltextract | `maltextract` | hops 0.35 | verbatim `MaltExtract -Xmx<g>g -t <taxon_list> -i <rma6s> -o results/ -r <ncbifiles> -p N -f -a --minPI <flags>` + `postprocessing.AMPS.r -r results/ -m -t N -n <taxon_list> -j`; requires `maltextract_taxon_list` + `maltextract_ncbifiles` (fail-fast guard); consumes the rma6s via glob with a DAG edge through `malt.log`; live-verified on bioinfo-wsx 2026-09-08 (nfcore/eager:2.5.3, MaltExtract 1.7 + AMPS): def_anc mode with `--destackingOff --dupRemOff --downSampOff` over the chain-v6 rma6s passed all 3 AMPS damage gates (default dr4 = 1.0 from editDistance [15,6,3,2], ancient dr4 = 1.0, mapDam = C>T_1 = 1.0) and rendered `heatmap_overview_Wevid.pdf` + `.tsv` + `.json` + per-sample candidate-profile PDFs; note the dr4 rise-penalty means damage-free fixtures leave the trg1 gate empty (image() crash) — the fixture needs light C>T damage; `when = run_maltextract && metagenomic_tool == 'malt'` (upstream verbatim) |
 | kraken | `kraken` | kraken2 2.1.2 | verbatim `kraken2 --db <db> --threads N --output <prefix>.kraken.out --report-minimizer-data --report <prefix>.kraken2_report <fastq>` + `cut -f1-3,6-8 > <prefix>.kreport`; reads the entropy-filtered fastq when the complexity filter is on (upstream channel switch); the output prefix is normalized to `{sample}.unmapped.fastq` in both branches (upstream prefixes by the input basename — see deviations); live-verified on tx-ubuntu 2026-08-27 (synthetic 2-taxon kraken2 DB built in-container via `kraken2-build --add-to-library` with `kraken:taxid|` headers; 14/14 injected alien reads classified as *Alienus syntheticus*, 18 succeeded / 0 failed); `when = run_metagenomic_screening && run_bam_filtering && bam_unmapped_type == 'fastq' && metagenomic_tool == 'kraken'` |
 | kraken_parse | `kraken_parse` | python 3.9.4 | verbatim `kraken_parse.py -c <min_support_reads> -or <read csv> -ok <kmer csv> <kreport>` (upstream script bundled in `scripts/`, called via `python3 scripts/kraken_parse.py` — oxo-flow does not auto-add `bin/` to PATH); gated on the same `when` as kraken (upstream no-ops the process via an empty channel); live-verified on tx-ubuntu 2026-08-27 (same run as kraken) |
 | kraken_merge | `kraken_merge` | python 3.9.4 | verbatim `merge_kraken_res.py -or kraken_read_count.csv -ok kraken_kmer_duplication.csv` (upstream script bundled in `scripts/`; it scans the working dir for the per-sample CSVs, which the fan-in gathers into one instance); gated on the same `when` as kraken; live-verified on tx-ubuntu 2026-08-27 (same run as kraken) |
@@ -294,9 +294,24 @@ Additional deviations from upstream (all on the default path):
     alone builds an EMPTY table, and the map must be sorted);
     `bam_unmapped_type=fastq` + `run_bam_filtering` + 
     `run_metagenomic_screening` + `metagenomic_tool=kraken`, 18
-    succeeded / 0 failed. The MALT half (malt/maltextract) remains NOT
-    live-verified (needs a MALT index DB, not yet available on the test
-    server).
+    succeeded / 0 failed. The MALT half (malt/maltextract) is also
+    live-verified on bioinfo-wsx 2026-09-08 (nfcore/eager:2.5.3,
+    MALT 0.6.1 + MaltExtract 1.7 + AMPS): MALT DB built with
+    `malt-build -i genome_acc.fa -o malt-db2 -s1 -t 4 -mh 100 -v` and an
+    accession→taxid map pointing the two synthetic contigs at 9606;
+    `--memoryMode map` is required (--memoryMode load OOMs even on the
+    600 Mb test index); the engine-verbatim full run reaches malt ✓
+    (17.9s, `-mq 100`), and the chain-v6 evidence run (percent
+    min-support 0.01, MaltExtract autos-off) passed all 3 AMPS damage
+    gates (dr4 = 1.0, ancient dr4 = 1.0, mapDam = 1.0) and rendered the
+    overview heatmap (`heatmap_overview_Wevid.pdf`/`.tsv`/`.json`).
+    Two fixture lessons from the verification: (1) a poly-A reference
+    contig makes every read maximally ambiguous — MALT drops them all
+    below the 0.01 min-support; build fixtures from unique windows of a
+    random-sequence contig; (2) MaltExtract's dr4 rise-penalty leaves the
+    trg1 target set empty for damage-free reads — the fixture needs light
+    5'-C>T damage or AMPS halts with `image(): increasing 'x' and 'y'
+    values expected`.
 - A `.gz`-compressed reference FASTA is not supported (upstream's
   `unzip_reference` pigz pre-step is not ported): pass a plain FASTA.
 - Upstream's startup parameter validation (e.g. the pileupCaller
@@ -360,10 +375,11 @@ All 14 branch smoke steps live-passed on the mini fixture:
 | E13 | run_bcftools_stats | ✅ |
 | E14 | run_mtnucratio (mini fallback — no MT contig in the fixture) | ✅ |
 
-The metagenomic chain (E15: `bam_unmapped_type=fastq` +
-`metagenomic_complexity_filter` + kraken; E16: malt + maltextract) is not
-part of the live-verified set yet — it passes `validate`/`dry-run` and needs
-a real MALT/kraken database on the test server.
+The metagenomic chain status after the MALT live verification (2026-09-08,
+bioinfo-wsx): E15's kraken half was live-verified on tx-ubuntu 2026-08-27;
+E16 (malt + maltextract) is now live-verified too — see the deviation notes
+above for the DB recipe, the `--memoryMode map` requirement, and the two
+fixture lessons (unique-window reads + light C>T damage).
 
 ## License
 
