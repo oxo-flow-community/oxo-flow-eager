@@ -998,7 +998,11 @@ depends_on = [
     "maltextract",
 ]
 input = []
-output = ["results/multiqc/multiqc_report.html"]
+output = [
+    "results/multiqc/multiqc_report.html",
+    "results/multiqc/multiqc_data/",
+    "results/multiqc/multiqc_plots/",
+]
 shell = '''
 set -euo pipefail
 ROOT=$PWD
